@@ -61,11 +61,6 @@ def _assert_miss(text: str, pii_type: PIIType, config: RedactorConfig | None = N
     assert entities == [], f"expected no {pii_type} in {text!r}, got {[e.text for e in entities]}"
 
 
-# ---------------------------------------------------------------------------
-# 1. Positive tables
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "text,expected",
     [
@@ -151,11 +146,6 @@ def test_address_positive() -> None:
     assert "560001" in ents[0].text
 
 
-# ---------------------------------------------------------------------------
-# 2. Negative tables
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.parametrize(
     "text,reason",
     [
@@ -232,11 +222,6 @@ def test_email_negatives(text: str, reason: str) -> None:
     _assert_miss(text, PIIType.EMAIL)
 
 
-# ---------------------------------------------------------------------------
-# 3. Boundaries
-# ---------------------------------------------------------------------------
-
-
 def test_match_at_start_and_end() -> None:
     text = "a@b.co and also end z@y.org"
     ents = _detector_for(PIIType.EMAIL).detect(text, _cfg())
@@ -264,11 +249,6 @@ def test_multiple_matches_ascending_and_duplicates() -> None:
 def test_match_inside_longer_token_rejected() -> None:
     # Digits glued inside an identifier should not be a phone
     _assert_miss("id9876543210xyz", PIIType.PHONE)
-
-
-# ---------------------------------------------------------------------------
-# 4. Validators in isolation
-# ---------------------------------------------------------------------------
 
 
 def test_luhn_known_vectors() -> None:
@@ -301,11 +281,6 @@ def test_card_brand_prefix() -> None:
     assert card_brand_prefix("378282246310005") == "amex"
 
 
-# ---------------------------------------------------------------------------
-# 5. Config-driven behaviour
-# ---------------------------------------------------------------------------
-
-
 def test_redact_reference_numbers_flips_ticket_phone() -> None:
     text = "Ticket #1234567890"
     _assert_miss(text, PIIType.PHONE, _cfg(redact_reference_numbers=False))
@@ -329,11 +304,6 @@ def test_preceding_label_window() -> None:
 def test_has_birth_cue() -> None:
     assert has_birth_cue("date of birth 12/03/1988", 15)
     assert not has_birth_cue("meeting on 12/03/1988", 11)
-
-
-# ---------------------------------------------------------------------------
-# 6–7. Registry contract and priorities
-# ---------------------------------------------------------------------------
 
 
 def test_registry_covers_rule_based_types_and_protocol() -> None:

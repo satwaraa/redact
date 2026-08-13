@@ -278,11 +278,6 @@ def _reject_reference(text: str, start: int, config: RedactorConfig) -> bool:
     return label is not None and label in NEGATIVE_CONTEXT
 
 
-# ---------------------------------------------------------------------------
-# Concrete detectors — ordered by prospectus payoff: email, phone, then the rest
-# ---------------------------------------------------------------------------
-
-
 class EmailDetector(RegexDetector):
     name = "email"
     pii_type = PIIType.EMAIL

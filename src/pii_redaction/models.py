@@ -115,6 +115,7 @@ class RedactorConfig:
     use_ner: bool = True
     ner_model: str = "en_core_web_sm"
     ner_confidence_threshold: float = 0.5
+    ner_max_doc_freq: int = 15
     redact_reference_numbers: bool = False
     locale: str = "en_IN"
     verify_output: bool = True

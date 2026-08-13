@@ -26,7 +26,7 @@ _LABEL_MAP: dict[str, PIIType] = {
     "DATE": PIIType.DOB,
 }
 
-# Boilerplate the model over-tags as ORG in prospectus-style documents.
+# Boilerplate the model over-tags as ORG in prospectus-style documents (B3).
 NER_ORG_STOPWORDS: frozenset[str] = frozenset(
     {
         "prospectus",
@@ -48,6 +48,47 @@ NER_ORG_STOPWORDS: frozenset[str] = frozenset(
         "draft red herring prospectus",
         "drhp",
         "rhp",
+        "offer",
+        "the offer",
+        "allotment",
+        "bidder",
+        "anchor investor",
+        "promoter",
+        "selling shareholder",
+        "book building",
+        "book building process",
+        "roc",
+        "face value",
+        "mandate",
+        "risk management committee",
+        "non-resident",
+        "non resident",
+        "fresh issue",
+        "offer for sale",
+        "objects of the offer",
+    }
+)
+
+# Field labels the model sometimes emits as PERSON/ORG (B6).
+NER_FIELD_LABELS: frozenset[str] = frozenset(
+    {
+        "email",
+        "e-mail",
+        "e mail",
+        "telephone",
+        "website",
+        "address",
+        "contact person",
+        "contact",
+        "fax",
+        "tel",
+        "phone",
+        "mobile",
+        "registered office",
+        "corporate office",
+        "cin",
+        "din",
+        "pan",
     }
 )
 
@@ -64,6 +105,14 @@ _BIRTH_CUES: frozenset[str] = frozenset(
     }
 )
 
+# Reject NER candidates seen more often than this across the document (B2).
+DEFAULT_NER_MAX_DOC_FREQ = 15
+
+# Types subject to the document-frequency precision guard.
+_FREQ_FILTER_TYPES: frozenset[PIIType] = frozenset(
+    {PIIType.FULL_NAME, PIIType.COMPANY, PIIType.ADDRESS}
+)
+
 # Module-level cache: model name → loaded spaCy Language. Never eager-load.
 _NLP_CACHE: dict[str, Any] = {}
 
@@ -72,9 +121,74 @@ NER_PII_TYPES: frozenset[PIIType] = frozenset(
 )
 
 
+def _normalize_span(text: str) -> str:
+    """Casefold, strip, collapse whitespace for stopword / label checks."""
+    return re.sub(r"\s+", " ", text.casefold().strip())
+
+
 def _has_birth_cue(text: str, start: int, window: int = 40) -> bool:
     left = text[max(0, start - window) : start].lower()
     return any(cue in left for cue in sorted(_BIRTH_CUES, key=len, reverse=True))
+
+
+def _is_field_label(span: str) -> bool:
+    """B6: bare field labels are never PII."""
+    norm = _normalize_span(span).rstrip(":").strip()
+    return norm in NER_FIELD_LABELS
+
+
+def _is_org_stopword(span: str) -> bool:
+    """B3: exact normalised match, or stopword contained as a whole phrase."""
+    norm = _normalize_span(span)
+    if not norm:
+        return False
+    if norm in NER_ORG_STOPWORDS:
+        return True
+    for stop in NER_ORG_STOPWORDS:
+        if stop in norm and re.search(
+            rf"(?<!\w){re.escape(stop)}(?!\w)", norm, flags=re.UNICODE
+        ):
+            return True
+    return False
+
+
+def _block_bounds(text: str, offset: int) -> tuple[int, int]:
+    start = text.rfind("\n", 0, offset) + 1
+    end = text.find("\n", offset)
+    if end < 0:
+        end = len(text)
+    return start, end
+
+
+def _is_heading_block(block: str) -> bool:
+    """B5: ALL-CAPS (and short all-caps-like) blocks are section titles."""
+    stripped = block.strip()
+    if not stripped:
+        return False
+    letters = [c for c in stripped if c.isalpha()]
+    if not letters:
+        return False
+    if all(c.isupper() for c in letters):
+        return True
+    # Short standalone title that is entirely stopword lexicon after normalise.
+    words = stripped.split()
+    if len(words) <= 6 and len(stripped) <= 60 and _is_org_stopword(stripped):
+        return True
+    return False
+
+
+def _doc_frequency(text: str, span: str, cache: dict[str, int]) -> int:
+    """Count casefolded occurrences of ``span`` in ``text`` (B2)."""
+    key = span.casefold()
+    cached = cache.get(key)
+    if cached is not None:
+        return cached
+    if not key:
+        cache[key] = 0
+        return 0
+    count = text.casefold().count(key)
+    cache[key] = count
+    return count
 
 
 def _load_nlp(model_name: str) -> Any:
@@ -180,10 +294,12 @@ class NERDetector:
         *,
         confidence_threshold: float = 0.5,
         max_chunk_chars: int = 80_000,
+        max_doc_freq: int = DEFAULT_NER_MAX_DOC_FREQ,
     ) -> None:
         self.model_name = model_name
         self.confidence_threshold = confidence_threshold
         self.max_chunk_chars = max_chunk_chars
+        self.max_doc_freq = max_doc_freq
         # spaCy en_core_web_sm does not emit per-entity scores by default;
         # use a fixed documented confidence rather than inventing a score.
         self._fixed_confidence = 1.0
@@ -195,6 +311,34 @@ class NERDetector:
     def emits_for(self, enabled: frozenset[PIIType]) -> bool:
         return bool(self.pii_types & enabled)
 
+    def _accept_piece(
+        self,
+        text: str,
+        pii_type: PIIType,
+        piece: str,
+        piece_start: int,
+        freq_cache: dict[str, int],
+        *,
+        max_doc_freq: int,
+    ) -> bool:
+        if len(piece) < 2:
+            return False
+        if re.fullmatch(r"[\W_]+", piece, flags=re.UNICODE):
+            return False
+        if _is_field_label(piece):
+            return False
+        block_start, block_end = _block_bounds(text, piece_start)
+        if _is_heading_block(text[block_start:block_end]):
+            return False
+        if pii_type is PIIType.DOB and not _has_birth_cue(text, piece_start):
+            return False
+        if pii_type is PIIType.COMPANY and _is_org_stopword(piece):
+            return False
+        if pii_type in _FREQ_FILTER_TYPES:
+            if _doc_frequency(text, piece, freq_cache) > max_doc_freq:
+                return False
+        return True
+
     def detect(self, text: str, config: RedactorConfig) -> list[PIIEntity]:
         if not self.emits_for(config.enabled_types):
             return []
@@ -205,6 +349,8 @@ class NERDetector:
         enabled = config.enabled_types
         results: list[PIIEntity] = []
         unmapped: dict[str, int] = {}
+        freq_cache: dict[str, int] = {}
+        max_doc_freq = config.ner_max_doc_freq
 
         for base, chunk in iter_text_chunks(text, self.max_chunk_chars):
             doc = nlp(chunk)
@@ -233,17 +379,13 @@ class NERDetector:
 
                 for piece_start, piece_end in clip_at_newlines(text, abs_start, abs_end):
                     piece = text[piece_start:piece_end]
-                    if len(piece) < 2:
-                        continue
-                    if re.fullmatch(r"[\W_]+", piece, flags=re.UNICODE):
-                        continue
-                    if pii_type is PIIType.DOB and not _has_birth_cue(
-                        text, piece_start
-                    ):
-                        continue
-                    if (
-                        pii_type is PIIType.COMPANY
-                        and piece.casefold() in NER_ORG_STOPWORDS
+                    if not self._accept_piece(
+                        text,
+                        pii_type,
+                        piece,
+                        piece_start,
+                        freq_cache,
+                        max_doc_freq=max_doc_freq,
                     ):
                         continue
                     results.append(

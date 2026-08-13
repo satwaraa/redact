@@ -20,6 +20,9 @@ from pii_redaction.ner import (
     clear_nlp_cache,
     clip_at_newlines,
     iter_text_chunks,
+    _is_field_label,
+    _is_heading_block,
+    _is_org_stopword,
 )
 
 
@@ -185,6 +188,99 @@ def test_org_stopwords_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
     entities = NERDetector().detect(text, _cfg())
     assert [e.text for e in entities] == ["Acme Corp"]
     assert entities[0].pii_type is PIIType.COMPANY
+
+
+def test_org_stopword_containment_and_normalise() -> None:
+    assert _is_org_stopword("the Offer")
+    assert _is_org_stopword("Risk Management Committee")
+    assert _is_org_stopword("Equity Shares")
+    assert not _is_org_stopword("Acme Corp")
+    assert not _is_org_stopword("Link Intime India Private Limited")
+
+
+def test_org_stopword_containment_drops_span(monkeypatch: pytest.MonkeyPatch) -> None:
+    text = "see the Offer and Acme Components Private Limited"
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc(
+            [
+                _FakeSpan("the Offer", text.index("the Offer"), "ORG"),
+                _FakeSpan(
+                    "Acme Components Private Limited",
+                    text.index("Acme Components Private Limited"),
+                    "ORG",
+                ),
+            ]
+        )
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    entities = NERDetector().detect(text, _cfg())
+    assert [e.text for e in entities] == ["Acme Components Private Limited"]
+
+
+def test_doc_freq_filter_rejects_boilerplate(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Phrase not on the stopword list, but repeated above the default threshold.
+    phrase = "Zorp Widget Group"
+    text = "\n".join([f"{phrase} appears here"] * 16 + ["Acme Corp once"])
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        ents = []
+        start = 0
+        while True:
+            i = chunk.find(phrase, start)
+            if i < 0:
+                break
+            ents.append(_FakeSpan(phrase, i, "ORG"))
+            start = i + 1
+        j = chunk.find("Acme Corp")
+        if j >= 0:
+            ents.append(_FakeSpan("Acme Corp", j, "ORG"))
+        return _FakeDoc(ents)
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    entities = NERDetector().detect(text, _cfg())
+    assert [e.text for e in entities] == ["Acme Corp"]
+
+
+def test_heading_block_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    text = "REGISTRAR TO THE OFFER\nAda Lovelace signed"
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc(
+            [
+                _FakeSpan(
+                    "REGISTRAR TO THE OFFER",
+                    text.index("REGISTRAR TO THE OFFER"),
+                    "ORG",
+                ),
+                _FakeSpan("Ada Lovelace", text.index("Ada Lovelace"), "PERSON"),
+            ]
+        )
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    entities = NERDetector().detect(text, _cfg())
+    assert [e.text for e in entities] == ["Ada Lovelace"]
+    assert entities[0].pii_type is PIIType.FULL_NAME
+
+
+def test_field_label_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    text = "Email: Ada Lovelace"
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc(
+            [
+                _FakeSpan("Email", text.index("Email"), "PERSON"),
+                _FakeSpan("Ada Lovelace", text.index("Ada Lovelace"), "PERSON"),
+            ]
+        )
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    entities = NERDetector().detect(text, _cfg())
+    assert [e.text for e in entities] == ["Ada Lovelace"]
+    assert _is_field_label("Email")
+    assert _is_field_label("Contact Person")
+    assert _is_heading_block("REGISTRAR TO THE OFFER")
+    assert not _is_heading_block("Ada Lovelace")
 
 
 def test_model_unavailable_names_install_command(

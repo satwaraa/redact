@@ -183,7 +183,10 @@ def test_phone_negatives(text: str, reason: str) -> None:
 @pytest.mark.parametrize(
     "text,reason",
     [
-        ("card 4111 1111 1111 1112", "fails Luhn"),
+        # "fails Luhn" alone is no longer a rejection: a Visa-shaped 16-digit
+        # number is card-shaped PII regardless of its checksum. See
+        # test_credit_card_detected_without_luhn_when_scheme_matches.
+        ("ref 9999 8888 7777 6666", "no issuer prefix, whatever the layout"),
         ("Invoice No. 4111111111111111", "invoice reference even if Luhn-valid"),
     ],
 )
@@ -402,3 +405,80 @@ def test_domain_does_not_match_an_email_domain() -> None:
     text = "write to ipo@kshinternational.com please"
     ents = _detector_for(PIIType.DOMAIN).detect(text, _cfg())
     assert ents == [], f"matched inside an email: {[e.text for e in ents]}"
+
+
+@pytest.mark.parametrize(
+    "text,reason",
+    [
+        ("4929-3813-3266-4295", "16-digit card layout, Luhn-valid"),
+        ("4929-3813-3266-4296", "16-digit card layout that FAILS Luhn"),
+        ("Account 1234 5678 9012 3456 7890", "20-digit account run"),
+        ("5370463888813020", "16 unseparated digits"),
+    ],
+)
+def test_phone_rejects_fragments_of_longer_numeric_runs(text: str, reason: str) -> None:
+    """A phone is a whole token, never a slice of a card or account number."""
+    _ = reason
+    _assert_miss(text, PIIType.PHONE)
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("call +91 98765 43210 now", "+91 98765 43210"),
+        ("cell 9876543210 ok", "9876543210"),
+        ("two numbers 9876543210, 9123456780 listed", "9876543210"),
+        ("cell\t9876543210\tnext", "9876543210"),
+    ],
+)
+def test_phone_still_matches_real_numbers(text: str, expected: str) -> None:
+    """The run guard must not swallow genuine phones beside other numbers."""
+    _assert_hit(text, PIIType.PHONE, expected)
+
+
+@pytest.mark.parametrize(
+    "text,expected,reason",
+    [
+        ("card 4929-3813-3266-4296", "4929-3813-3266-4296", "Visa layout, fails Luhn"),
+        ("card 5370-4638-8881-3021", "5370-4638-8881-3021", "Mastercard, fails Luhn"),
+        ("amex 378282246310006", "378282246310006", "Amex 15-digit, fails Luhn"),
+    ],
+)
+def test_credit_card_detected_without_luhn_when_scheme_matches(
+    text: str, expected: str, reason: str
+) -> None:
+    """Card-shaped data that fails the checksum is still card-shaped PII."""
+    _ = reason
+    _assert_hit(text, PIIType.CREDIT_CARD, expected)
+
+
+def test_non_luhn_card_carries_lower_confidence() -> None:
+    det = _detector_for(PIIType.CREDIT_CARD)
+    strong = det.detect("card 4111 1111 1111 1111", _cfg())[0]
+    weak = det.detect("card 4929-3813-3266-4296", _cfg())[0]
+    assert strong.confidence == 1.0
+    assert weak.confidence < strong.confidence
+
+
+@pytest.mark.parametrize(
+    "text,reason",
+    [
+        ("ref 9999888877776666", "no issuer prefix matches"),
+        ("id 4111 1111 1111 11110", "17 digits: no Visa length"),
+        ("Invoice No. 4111111111111111", "reference-number context still wins"),
+    ],
+)
+def test_credit_card_negatives_still_hold(text: str, reason: str) -> None:
+    _ = reason
+    _assert_miss(text, PIIType.CREDIT_CARD)
+
+
+def test_card_scheme_match_table() -> None:
+    from pii_redaction.detectors import card_scheme_match
+
+    assert card_scheme_match("4929381332664296")  # Visa 16
+    assert card_scheme_match("378282246310006")  # Amex 15
+    assert card_scheme_match("6011000000000005")  # Discover 16
+    assert not card_scheme_match("9999888877776666")  # unknown issuer
+    assert not card_scheme_match("37828224631000")  # Amex wrong length
+    assert not card_scheme_match("411111111111")  # too short for Visa

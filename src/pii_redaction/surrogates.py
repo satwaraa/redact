@@ -18,6 +18,9 @@ from pii_redaction.models import (
 
 _MAX_ATTEMPTS: Final = 48
 
+# Types whose surrogates must not embed a real person-name token.
+_NAME_LIKE_TYPES: Final = frozenset({PIIType.FULL_NAME, PIIType.COMPANY, PIIType.ADDRESS})
+
 # Public suffixes whose second-to-last label is part of the suffix.
 _SECOND_LEVEL_SUFFIXES: Final = frozenset(
     {"co", "com", "net", "org", "gov", "edu", "ac", "in", "res"}
@@ -370,13 +373,32 @@ class SurrogateFactory:
         # casefolded real registrable label -> fake label, shared by website
         # domains and email domains so both forms of a company's domain agree.
         self._domain_map: dict[str, str] = {}
+        # Person-name tokens present in the document; no surrogate may contain
+        # one (see _contains_real_name_token).
+        self._real_name_tokens: set[str] = set()
 
     @property
     def mapping(self) -> Mapping[str, str]:
         return dict(self._mapping)
 
+    def _contains_real_name_token(self, candidate: str) -> bool:
+        """True when a surrogate embeds a real person-name token.
+
+        Faker's en_IN company generator produces names like "Yohannan, Hegde and
+        Patla". If "Hegde" is a real promoter's surname, that fake company puts
+        a real surname back into the redacted document — harmless to
+        re-identification, but it defeats leak verification and misleads a
+        reader. Equality checks miss it; this checks containment.
+        """
+        if not self._real_name_tokens:
+            return False
+        tokens = {t.casefold() for t in re.findall(r"[^\W\d_]{4,}", candidate, re.UNICODE)}
+        return bool(tokens & self._real_name_tokens)
+
     def _forbidden(self, candidate: str, original: str) -> bool:
         if candidate == original:
+            return True
+        if self._contains_real_name_token(candidate):
             return True
         reals_cf = {v.casefold() for v in self._real_values}
         used_cf = {v.casefold() for v in self._used_fakes}
@@ -384,10 +406,35 @@ class SurrogateFactory:
             return True
         return candidate in self._used_fakes or candidate.casefold() in used_cf
 
+    def _replace_real_name_tokens(self, value: str) -> str:
+        """Swap out any real name token a generator happened to emit.
+
+        Repair rather than reject: Faker's en_IN company pool draws on the same
+        surname list as its person names, so on a document with hundreds of real
+        names almost every candidate collides and a retry loop simply exhausts.
+        """
+        if not self._real_name_tokens:
+            return value
+
+        def _swap(match: re.Match[str]) -> str:
+            token = match.group(0)
+            if token.casefold() not in self._real_name_tokens:
+                return token
+            for _ in range(8):
+                # word() draws from a vocabulary list, not the surname pool.
+                candidate = self._faker.word().capitalize()
+                if candidate.casefold() not in self._real_name_tokens:
+                    return candidate.upper() if token.isupper() else candidate
+            return "Redacted"
+
+        return re.sub(r"[^\W\d_]{4,}", _swap, value, flags=re.UNICODE)
+
     def _generate(self, pii_type: PIIType, original: str) -> str:
         generator = GENERATORS[pii_type]
         for _ in range(_MAX_ATTEMPTS):
             candidate = generator(original, self._faker)
+            if candidate and pii_type in _NAME_LIKE_TYPES:
+                candidate = self._replace_real_name_tokens(candidate)
             if not candidate or self._forbidden(candidate, original):
                 continue
             if pii_type is PIIType.CREDIT_CARD:
@@ -477,6 +524,12 @@ class SurrogateFactory:
         for entity in entities:
             self._real_values.add(entity.text)
             self._real_values.add(normalise_key(entity.pii_type, entity.text))
+        self._real_name_tokens = {
+            token.casefold()
+            for entity in entities
+            if entity.pii_type is PIIType.FULL_NAME
+            for token in re.findall(r"[^\W\d_]{4,}", entity.text, re.UNICODE)
+        } - {h.rstrip(".") for h in _HONORIFICS}
 
         for entity in entities:
             if entity.pii_type is PIIType.FULL_NAME:

@@ -89,6 +89,38 @@ class Detector(Protocol):
     def detect(self, text: str, config: RedactorConfig) -> list[PIIEntity]: ...
 
 
+_RUN_SEPARATORS = " \t-"
+
+
+def _digit_run(text: str, start: int, end: int) -> str:
+    """The maximal digit-and-separator run containing ``text[start:end]``.
+
+    Grows outward across a separator only while it sits between digits, so
+    "3813-3266-4295" inside "4929-3813-3266-4295" reports all 16 digits, while
+    two numbers split by ", " or a tab remain separate runs.
+    """
+    left = start
+    while left > 0:
+        prev = text[left - 1]
+        if prev.isdigit():
+            left -= 1
+        elif prev in _RUN_SEPARATORS and left - 2 >= 0 and text[left - 2].isdigit():
+            left -= 2
+        else:
+            break
+    right = end
+    length = len(text)
+    while right < length:
+        nxt = text[right]
+        if nxt.isdigit():
+            right += 1
+        elif nxt in _RUN_SEPARATORS and right + 1 < length and text[right + 1].isdigit():
+            right += 2
+        else:
+            break
+    return text[left:right]
+
+
 def preceding_label(text: str, start: int, window: int = 40) -> str | None:
     """Return the nearest context label immediately before ``start``, if any."""
     left = text[max(0, start - window) : start]
@@ -124,6 +156,36 @@ def luhn_valid(digits: str) -> bool:
                 n -= 9
         total += n
     return total % 10 == 0
+
+
+def card_scheme_match(digits: str) -> bool:
+    """True when prefix AND length match a real card scheme.
+
+    Luhn alone is too strict for redaction: a document full of card-shaped
+    numbers that fail the checksum — test data, transcription errors, partially
+    masked records — is still full of card-shaped PII. Requiring the issuer
+    prefix and that scheme's exact length keeps this far narrower than "any long
+    number", so ordinary account and reference numbers are unaffected.
+    """
+    n = len(digits)
+    if not digits.isdigit():
+        return False
+    if digits.startswith("4"):
+        return n in (13, 16, 19)
+    if digits[:2] in {"51", "52", "53", "54", "55"}:
+        return n == 16
+    if n >= 4 and digits[:4].isdigit() and 2221 <= int(digits[:4]) <= 2720:
+        return n == 16
+    if digits[:2] in {"34", "37"}:
+        return n == 15
+    discover_600s = {"644", "645", "646", "647", "648", "649"}
+    if digits.startswith("6011") or digits[:2] == "65" or digits[:3] in discover_600s:
+        return n == 16
+    if digits[:3] in {"300", "301", "302", "303", "304", "305"} or digits[:2] in {"36", "38"}:
+        return n == 14
+    if n >= 4 and digits[:4].isdigit() and 3528 <= int(digits[:4]) <= 3589:
+        return n == 16
+    return False
 
 
 def card_brand_prefix(digits: str) -> str:
@@ -213,6 +275,10 @@ class RegexDetector:
             return match.group(self.group)
         return match.group(0)
 
+    def confidence_for(self, match: re.Match[str]) -> float:
+        """Per-match confidence. Override where a detector has weaker evidence."""
+        return 1.0
+
     def _span(self, match: re.Match[str]) -> tuple[int, int, str]:
         if self.group and self.group in match.re.groupindex:
             return match.start(self.group), match.end(self.group), match.group(self.group)
@@ -235,7 +301,7 @@ class RegexDetector:
                     start=start,
                     end=end,
                     source=f"regex:{self.name}",
-                    confidence=1.0,
+                    confidence=self.confidence_for(match),
                     priority=self.priority,
                 )
             )
@@ -333,13 +399,21 @@ class PhoneDetector(RegexDetector):
     )
 
     def validate(self, match: re.Match[str], text: str, config: RedactorConfig) -> bool:
-        start, _, value = self._span(match)
+        start, end, value = self._span(match)
         if "\n" in value or "\r" in value:
             return False
         if _reject_reference(text, start, config):
             return False
         digits = _NON_DIGIT.sub("", value)
         if not (7 <= len(digits) <= 15):
+            return False
+        # A phone number is a whole token, never a fragment of a longer numeric
+        # string. Without this, "4929-3813-3266-4295" yields a 12-digit phone
+        # match starting after a hyphen: the card is then replaced with
+        # phone-shaped digits, losing its brand prefix and Luhn validity.
+        # E.164 caps a real number at 15 digits, so a longer run is an account,
+        # card or reference number whatever its internal separators.
+        if len(_NON_DIGIT.sub("", _digit_run(text, start, end))) > 15:
             return False
         return not bool(_YEARISH.fullmatch(digits))
 
@@ -370,7 +444,13 @@ class CreditCardDetector(RegexDetector):
         digits = _NON_DIGIT.sub("", value)
         if not (13 <= len(digits) <= 19):
             return False
-        return luhn_valid(digits)
+        # Luhn is the strong signal; a scheme-correct prefix and length is
+        # enough to redact a card-shaped number whose checksum fails.
+        return luhn_valid(digits) or card_scheme_match(digits)
+
+    def confidence_for(self, match: re.Match[str]) -> float:
+        digits = _NON_DIGIT.sub("", match.group("value"))
+        return 1.0 if luhn_valid(digits) else 0.75
 
 
 class IPAddressDetector(RegexDetector):

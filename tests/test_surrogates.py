@@ -266,19 +266,53 @@ def test_fake_never_equals_any_real_in_document() -> None:
 
 
 def test_collision_exhaustion_raises() -> None:
+    """A generator that can only emit the original must fail, never leak it."""
     factory = SurrogateFactory(_cfg(0))
-    entity = _entity("Unique Name", PIIType.FULL_NAME)
+    entity = _entity("+91 98765 43210", PIIType.PHONE)
 
     def always_same(_original: str, _faker: object) -> str:
-        return "Unique Name"
+        return "+91 98765 43210"
 
     with (
-        patch.dict(GENERATORS, {PIIType.FULL_NAME: always_same}),
+        patch.dict(GENERATORS, {PIIType.PHONE: always_same}),
         pytest.raises(SurrogateCollisionError),
     ):
         factory.assign([entity])
 
 
+def test_name_like_collision_is_repaired_not_raised() -> None:
+    """Name-like types repair a colliding token instead of exhausting retries.
+
+    Faker's en_IN company pool shares a surname list with its person names, so
+    on a document with hundreds of real names a reject-and-retry loop fails
+    outright. Repair keeps generation total.
+    """
+    factory = SurrogateFactory(_cfg(0))
+    entities = [
+        _entity("Hegde Rastogi", PIIType.FULL_NAME, start=0),
+        _entity("Hegde Traders Limited", PIIType.COMPANY, start=40),
+    ]
+    out = factory.assign(entities)
+    joined = " ".join(e.replacement or "" for e in out).casefold()
+    assert all(e.replacement for e in out)
+    assert "hegde" not in joined
+    assert "rastogi" not in joined
+
+
 @pytest.mark.parametrize("pii_type", list(PIIType))
 def test_every_type_has_generator(pii_type: PIIType) -> None:
     assert pii_type in GENERATORS
+
+
+def test_surrogate_never_embeds_a_real_name_token() -> None:
+    """Faker's company pool can emit a real surname; containment must be rejected."""
+    entities = [
+        _entity("Kushal Hegde", PIIType.FULL_NAME, start=0),
+        _entity("Acme Industries Limited", PIIType.COMPANY, start=40),
+        _entity("Beta Traders Limited", PIIType.COMPANY, start=80),
+        _entity("Gamma Exports Limited", PIIType.COMPANY, start=120),
+    ]
+    out = SurrogateFactory(_cfg(0)).assign(entities)
+    joined = " ".join(e.replacement or "" for e in out).casefold()
+    assert "hegde" not in joined
+    assert "kushal" not in joined

@@ -206,6 +206,27 @@ NER_PII_TYPES: frozenset[PIIType] = frozenset(
 )
 
 
+# Unicode spaces Word emits inside table cells and between name parts. Each is
+# a single character, so translating them preserves every offset exactly — the
+# model sees ordinary spaces while entity text still comes from the original.
+_SPACE_TRANSLATION = str.maketrans(
+    {
+        " ": " ",  # no-break space — "Robert Aragon" in Word tables
+        " ": " ",  # figure space
+        " ": " ",  # narrow no-break space
+        " ": " ",  # thin space
+        " ": " ",  # hair space
+        " ": " ",  # en space
+        " ": " ",  # em space
+    }
+)
+
+
+def normalise_spaces(text: str) -> str:
+    """Map exotic Unicode spaces to U+0020 without changing length or offsets."""
+    return text.translate(_SPACE_TRANSLATION)
+
+
 def _normalize_span(text: str) -> str:
     """Casefold, strip, collapse whitespace for stopword / label checks."""
     return re.sub(r"\s+", " ", text.casefold().strip())
@@ -557,10 +578,11 @@ class NERDetector:
         results: list[PIIEntity] = []
         unmapped: dict[str, int] = {}
         require_agreement = config.ner_agreement
-        gazetteer = build_person_gazetteer(text)
-        vocabulary = build_lowercase_vocabulary(text)
+        normalised = normalise_spaces(text)
+        gazetteer = build_person_gazetteer(normalised)
+        vocabulary = build_lowercase_vocabulary(normalised)
 
-        for base, chunk in iter_text_chunks(text, self.max_chunk_chars):
+        for base, chunk in iter_text_chunks(normalised, self.max_chunk_chars):
             doc = nlp(chunk)
             for ent in doc.ents:
                 label = ent.label_
@@ -582,8 +604,11 @@ class NERDetector:
                 local_end = local_start + len(span_text)
                 abs_start = base + local_start
                 abs_end = base + local_end
-                if text[abs_start:abs_end] != span_text:
+                # The model reads normalised text; entities must carry the
+                # ORIGINAL slice so text[start:end] == entity.text still holds.
+                if normalised[abs_start:abs_end] != span_text:
                     continue
+                span_text = text[abs_start:abs_end]
 
                 for piece_start, piece_end in clip_at_newlines(text, abs_start, abs_end):
                     piece = text[piece_start:piece_end]

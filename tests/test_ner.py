@@ -26,6 +26,7 @@ from pii_redaction.ner import (
     clear_nlp_cache,
     clip_at_newlines,
     iter_text_chunks,
+    normalise_spaces,
 )
 
 
@@ -518,3 +519,30 @@ def test_help_still_avoids_spacy(capsys: pytest.CaptureFixture[str]) -> None:
     assert exc_info.value.code == 0
     assert "spacy" not in sys.modules
     assert "usage:" in capsys.readouterr().out.lower()
+
+
+def test_normalise_spaces_preserves_length_and_offsets() -> None:
+    original = "Robert\xa0Aragon and Ashley Borden"
+    normalised = normalise_spaces(original)
+    assert len(normalised) == len(original)
+    assert normalised == "Robert Aragon and Ashley Borden"
+    # Every offset still addresses the same character position.
+    for i, ch in enumerate(original):
+        assert ch.isspace() == normalised[i].isspace()
+
+
+def test_nbsp_separated_name_is_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Word writes table-cell names with a no-break space; NER must still see them."""
+    text = "Reported by\nRobert\xa0Aragon\t489-36-8350\n"
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        i = chunk.find("Robert Aragon")
+        return _FakeDoc([_FakeSpan("Robert Aragon", i, "PERSON")] if i >= 0 else [])
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    entities = NERDetector().detect(text, _cfg())
+    assert len(entities) == 1
+    entity = entities[0]
+    # The entity carries the ORIGINAL slice, so the D2 invariant holds.
+    assert entity.text == "Robert\xa0Aragon"
+    assert text[entity.start : entity.end] == entity.text

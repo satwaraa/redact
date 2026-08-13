@@ -260,6 +260,16 @@ def get_detectors(config: RedactorConfig) -> list[Detector]:
         if pii_type not in config.enabled_types:
             continue
         detectors.extend(group)
+    if config.use_ner:
+        # Lazy import keeps `import pii_redaction.detectors` and `--help` spaCy-free.
+        from pii_redaction.ner import NERDetector
+
+        ner = NERDetector(
+            model_name=config.ner_model,
+            confidence_threshold=config.ner_confidence_threshold,
+        )
+        if ner.emits_for(config.enabled_types):
+            detectors.append(ner)
     detectors.sort(key=lambda d: (-d.priority, d.name))
     return detectors
 

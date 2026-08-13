@@ -1,31 +1,105 @@
-"""Orchestration. Thin by construction — Phase 4: detect, then apply nothing."""
+"""Orchestration: detect → resolve → assign → apply → verify → save."""
 
 from __future__ import annotations
 
 import logging
 from collections import Counter
+from collections.abc import Sequence
 from pathlib import Path
 
 from pii_redaction.detectors import get_detectors
 from pii_redaction.document import DocxDocument
 from pii_redaction.models import (
     DocumentError,
+    LeakDetectedError,
     PIIEntity,
     PIIType,
     RedactionResult,
     RedactorConfig,
     assert_consistent,
 )
+from pii_redaction.resolution import resolve
+from pii_redaction.surrogates import SurrogateFactory
 
 logger = logging.getLogger(__name__)
 
+# Whole-string leak search only above this length (D7 false-positive guard).
+_LEAK_MIN_LEN = 5
+
+
+def apply_text(text: str, entities: Sequence[PIIEntity]) -> str:
+    """Splice replacements into ``text`` right-to-left (non-overlapping spans)."""
+    ordered = sorted(entities, key=lambda e: e.start, reverse=True)
+    result = text
+    for entity in ordered:
+        if entity.replacement is None:
+            raise DocumentError(
+                f"entity at {entity.start}:{entity.end} has no replacement"
+            )
+        result = result[: entity.start] + entity.replacement + result[entity.end :]
+    return result
+
+
+def verify_no_leaks(
+    entities: Sequence[PIIEntity],
+    rendered: str,
+    *,
+    original_text: str | None = None,
+) -> None:
+    """Raise ``LeakDetectedError`` if an original value survived redaction (D7).
+
+    When ``original_text`` is provided, first confirm each assigned span would
+    change under ``apply_text`` (offset-level). Then search ``rendered`` for
+    surviving originals, but only for values at least ``_LEAK_MIN_LEN`` long so
+    short tokens that appear inside unrelated words do not false-positive.
+    """
+    if original_text is not None:
+        for entity in entities:
+            if entity.replacement is None:
+                continue
+            if original_text[entity.start : entity.end] != entity.text:
+                raise LeakDetectedError(entity.pii_type, 1)
+            if entity.replacement == entity.text:
+                raise LeakDetectedError(entity.pii_type, 1)
+        expected = apply_text(original_text, entities)
+        for entity in entities:
+            if entity.replacement is None or len(entity.text) < _LEAK_MIN_LEN:
+                continue
+            if entity.text in expected:
+                raise LeakDetectedError(entity.pii_type, 1)
+
+    leaks: Counter[PIIType] = Counter()
+    for entity in entities:
+        if entity.replacement is None:
+            continue
+        if len(entity.text) < _LEAK_MIN_LEN:
+            continue
+        if entity.text in rendered:
+            leaks[entity.pii_type] += 1
+            logger.warning(
+                "leak candidate type=%s offsets=%d:%d length=%d",
+                entity.pii_type.value,
+                entity.start,
+                entity.end,
+                len(entity.text),
+            )
+    if leaks:
+        pii_type, count = leaks.most_common(1)[0]
+        raise LeakDetectedError(pii_type, count)
+
+
+def _fits_single_block(doc: DocxDocument, entity: PIIEntity) -> bool:
+    """True when the entity lies entirely inside one paragraph block."""
+    try:
+        idx = doc._block_index_for_offset(entity.start)  # noqa: SLF001
+    except DocumentError:
+        return False
+    _, block_end = doc._block_spans[idx]  # noqa: SLF001
+    return entity.end <= block_end
+
 
 class Redactor:
-    """Sequence the redaction pipeline.
-
-    Phase 4 runs rule-based detectors and reports counts, but does not yet
-    resolve overlaps, assign surrogates, or splice replacements.
-    """
+    """Thin pipeline sequencer over detectors, resolution, surrogates, and document."""
 
     def __init__(self, config: RedactorConfig | None = None) -> None:
         self.config = config if config is not None else RedactorConfig.default()
@@ -36,24 +110,48 @@ class Redactor:
         for detector in self._detectors:
             found = detector.detect(text, self.config)
             logger.info(
-                "detector %s (%s) matched %d span(s)",
+                "detector %s type=%s count=%d",
                 detector.name,
                 detector.pii_type.value,
                 len(found),
             )
+            for entity in found:
+                logger.debug(
+                    "span type=%s source=%s offsets=%d:%d",
+                    entity.pii_type.value,
+                    entity.source,
+                    entity.start,
+                    entity.end,
+                )
             entities.extend(found)
         entities.sort(key=lambda e: (e.start, e.end, e.source))
         assert_consistent(text, entities)
         return entities
 
+    def _pipeline(self, text: str) -> tuple[list[PIIEntity], dict[str, str], str]:
+        detected = self.detect(text)
+        resolved = resolve(detected)
+        logger.info(
+            "resolve input=%d output=%d",
+            len(detected),
+            len(resolved),
+        )
+        factory = SurrogateFactory(self.config)
+        assigned = factory.assign(resolved)
+        logger.info("assigned replacements count=%d", len(assigned))
+        redacted = apply_text(text, assigned)
+        if self.config.verify_output:
+            verify_no_leaks(assigned, redacted, original_text=text)
+        return assigned, dict(factory.mapping), redacted
+
     def redact_text(self, text: str) -> RedactionResult:
-        entities = self.detect(text)
-        counts: Counter[PIIType] = Counter(e.pii_type for e in entities)
+        assigned, mapping, redacted = self._pipeline(text)
+        counts = Counter(e.pii_type for e in assigned)
         return RedactionResult(
-            entities=tuple(entities),
-            mapping={},
+            entities=tuple(assigned),
+            mapping=mapping,
             counts_by_type=dict(counts),
-            text=text,
+            text=redacted,
         )
 
     def redact_document(
@@ -63,25 +161,59 @@ class Redactor:
         *,
         dry_run: bool = False,
     ) -> RedactionResult:
-        """Docx path: load → extract → detect → (no apply yet) → save copy."""
         source = Path(src)
         doc = DocxDocument(source)
         text = doc.extract_text()
         logger.info(
-            "extracted %d characters across %d blocks",
+            "extracted chars=%d blocks=%d",
             len(text),
             len(doc.blocks),
         )
-        result = self.redact_text(text)
-        # Phase 4: detections only — no resolve / assign / apply.
+
+        detected = self.detect(text)
+        resolved = resolve(detected)
+        logger.info("resolve input=%d output=%d", len(detected), len(resolved))
+
+        # Document apply cannot splice spans that cross paragraph boundaries
+        # (known limitation: multi-block addresses). Drop before assign so leak
+        # verification is not asked to prove replacements we will never make.
+        applicable = [e for e in resolved if _fits_single_block(doc, e)]
+        dropped = len(resolved) - len(applicable)
+        if dropped:
+            logger.info("dropped cross-block spans count=%d", dropped)
+
+        factory = SurrogateFactory(self.config)
+        assigned = factory.assign(applicable)
+        logger.info("assigned replacements count=%d", len(assigned))
+        mapping = dict(factory.mapping)
+        counts = Counter(e.pii_type for e in assigned)
+        preview = apply_text(text, assigned)
+
         if dry_run:
-            logger.info("dry-run: skipping save (%d entities)", len(result.entities))
-            return result
+            logger.info("dry-run: skipping apply/save entities=%d", len(assigned))
+            return RedactionResult(
+                entities=tuple(assigned),
+                mapping=mapping,
+                counts_by_type=dict(counts),
+                text=preview,
+            )
+
         if dst is None:
             raise DocumentError("output path required when not dry-run")
+
+        doc.apply(assigned)
+        rendered = doc.rendered_text()
+        if self.config.verify_output:
+            verify_no_leaks(assigned, rendered, original_text=text)
         doc.save(dst)
         logger.info(
-            "wrote output unchanged (%d detections, 0 replacements)",
-            len(result.entities),
+            "wrote output entities=%d path_suffix=%s",
+            len(assigned),
+            Path(dst).suffix,
         )
-        return result
+        return RedactionResult(
+            entities=tuple(assigned),
+            mapping=mapping,
+            counts_by_type=dict(counts),
+            text=rendered,
+        )

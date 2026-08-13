@@ -29,7 +29,7 @@ class TestExitCodes:
     def test_success(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         src = _write_simple_docx(tmp_path / "in.docx", "plain text")
         out = tmp_path / "out.docx"
-        code = main([str(src), "-o", str(out)])
+        code = main([str(src), "-o", str(out), "--no-ner"])
         assert code == 0
         assert out.exists()
         captured = capsys.readouterr()
@@ -88,10 +88,44 @@ class TestDryRun:
     def test_writes_no_file(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
         src = _write_simple_docx(tmp_path / "in.docx", "content")
         out = tmp_path / "out.docx"
-        code = main([str(src), "--dry-run", "-o", str(out)])
+        code = main([str(src), "--dry-run", "-o", str(out), "--no-ner"])
         assert code == 0
         assert not out.exists()
         assert "total: 0" in capsys.readouterr().out
+
+    def test_reports_counts_for_pii(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        src = _write_simple_docx(tmp_path / "in.docx", "mail a@b.co please")
+        out = tmp_path / "out.docx"
+        code = main([str(src), "--dry-run", "--no-ner", "--seed", "0"])
+        assert code == 0
+        assert not out.exists()
+        captured = capsys.readouterr().out
+        assert "EMAIL" in captured
+        assert "a@b.co" not in captured
+
+
+class TestReportOptIn:
+    def test_report_only_when_requested(self, tmp_path: Path) -> None:
+        src = _write_simple_docx(tmp_path / "in.docx", "a@b.co")
+        out = tmp_path / "out.docx"
+        report = tmp_path / "r.json"
+        code = main(
+            [str(src), "-o", str(out), "--no-ner", "--seed", "0", "--report", str(report)]
+        )
+        assert code == 0
+        assert report.exists()
+        body = report.read_text(encoding="utf-8")
+        assert "mapping" in body
+        assert "version" in body
+
+    def test_no_report_without_flag(self, tmp_path: Path) -> None:
+        src = _write_simple_docx(tmp_path / "in.docx", "a@b.co")
+        out = tmp_path / "out.docx"
+        code = main([str(src), "-o", str(out), "--no-ner"])
+        assert code == 0
+        assert list(tmp_path.glob("*.json")) == []
 
 
 class TestFlagWiring:

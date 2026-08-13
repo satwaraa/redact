@@ -1,29 +1,58 @@
-"""Orchestration. Thin by construction — Phase 3: load, extract, apply nothing, save."""
+"""Orchestration. Thin by construction — Phase 4: detect, then apply nothing."""
 
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from pathlib import Path
 
+from pii_redaction.detectors import get_detectors
 from pii_redaction.document import DocxDocument
-from pii_redaction.models import DocumentError, RedactionResult, RedactorConfig
+from pii_redaction.models import (
+    DocumentError,
+    PIIEntity,
+    PIIType,
+    RedactionResult,
+    RedactorConfig,
+    assert_consistent,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class Redactor:
-    """Sequence the redaction pipeline. Phase 3 runs with zero detectors."""
+    """Sequence the redaction pipeline.
+
+    Phase 4 runs rule-based detectors and reports counts, but does not yet
+    resolve overlaps, assign surrogates, or splice replacements.
+    """
 
     def __init__(self, config: RedactorConfig | None = None) -> None:
         self.config = config if config is not None else RedactorConfig.default()
+        self._detectors = get_detectors(self.config)
+
+    def detect(self, text: str) -> list[PIIEntity]:
+        entities: list[PIIEntity] = []
+        for detector in self._detectors:
+            found = detector.detect(text, self.config)
+            logger.info(
+                "detector %s (%s) matched %d span(s)",
+                detector.name,
+                detector.pii_type.value,
+                len(found),
+            )
+            entities.extend(found)
+        entities.sort(key=lambda e: (e.start, e.end, e.source))
+        assert_consistent(text, entities)
+        return entities
 
     def redact_text(self, text: str) -> RedactionResult:
-        """Pure text path. With zero detectors this is an identity transform."""
-        _ = text  # retained for later detect → resolve → assign stages
+        entities = self.detect(text)
+        counts: Counter[PIIType] = Counter(e.pii_type for e in entities)
         return RedactionResult(
-            entities=(),
+            entities=tuple(entities),
             mapping={},
-            counts_by_type={},
+            counts_by_type=dict(counts),
             text=text,
         )
 
@@ -34,7 +63,7 @@ class Redactor:
         *,
         dry_run: bool = False,
     ) -> RedactionResult:
-        """Docx path: load → extract → (no detections) → apply nothing → save."""
+        """Docx path: load → extract → detect → (no apply yet) → save copy."""
         source = Path(src)
         doc = DocxDocument(source)
         text = doc.extract_text()
@@ -44,12 +73,15 @@ class Redactor:
             len(doc.blocks),
         )
         result = self.redact_text(text)
-        # Zero detectors: nothing to resolve, assign, or apply.
+        # Phase 4: detections only — no resolve / assign / apply.
         if dry_run:
-            logger.info("dry-run: skipping save")
+            logger.info("dry-run: skipping save (%d entities)", len(result.entities))
             return result
         if dst is None:
             raise DocumentError("output path required when not dry-run")
         doc.save(dst)
-        logger.info("wrote output with 0 replacements")
+        logger.info(
+            "wrote output unchanged (%d detections, 0 replacements)",
+            len(result.entities),
+        )
         return result

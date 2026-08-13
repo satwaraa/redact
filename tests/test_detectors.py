@@ -130,6 +130,7 @@ def test_dob_positives(text: str, expected: str) -> None:
         ("host 192.168.1.1 up", "192.168.1.1"),
         ("net 10.0.0.255 mask", "10.0.0.255"),
         ("v6 2001:db8::1 node", "2001:db8::1"),
+        ("v6 2001:db8::1. Next", "2001:db8::1"),
     ],
 )
 def test_ip_positives(text: str, expected: str) -> None:
@@ -144,6 +145,18 @@ def test_address_positive() -> None:
     assert text[ents[0].start : ents[0].end] == ents[0].text
     assert "12 MG Road" in ents[0].text
     assert "560001" in ents[0].text
+
+
+def test_address_does_not_span_paragraphs() -> None:
+    """DOTALL-style matching used to glue IP tails onto later address lines."""
+    text = (
+        "Workstation IP: 192.168.1.10 and also 2001:db8::1.\n\n"
+        "Home: 12 MG Road, Bengaluru - 560001.\n"
+    )
+    ents = _detector_for(PIIType.ADDRESS).detect(text, _cfg())
+    assert len(ents) == 1
+    assert ents[0].text.startswith("12 MG Road")
+    assert "\n" not in ents[0].text
 
 
 @pytest.mark.parametrize(

@@ -16,7 +16,12 @@ from pii_redaction.models import (
     PIIType,
     RedactorConfig,
 )
-from pii_redaction.redactor import Redactor, apply_text, verify_no_leaks
+from pii_redaction.redactor import (
+    Redactor,
+    apply_text,
+    expand_occurrences,
+    verify_no_leaks,
+)
 
 
 def _write_simple_docx(path: Path, text: str) -> Path:
@@ -27,6 +32,20 @@ def _write_simple_docx(path: Path, text: str) -> Path:
             continue
         body.remove(child)
     doc.add_paragraph(text)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(str(path))
+    return path
+
+
+def _write_docx(path: Path, paragraphs: list[str]) -> Path:
+    doc = Document()
+    body = doc.element.body
+    for child in list(body):
+        if child.tag.endswith("}sectPr"):
+            continue
+        body.remove(child)
+    for paragraph in paragraphs:
+        doc.add_paragraph(paragraph)
     path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(path))
     return path
@@ -134,6 +153,99 @@ def test_short_surname_false_positive_guard() -> None:
     ]
     rendered = "Anniversary party"
     verify_no_leaks(entities, rendered, original_text=None)
+
+
+def test_expand_occurrences_covers_missed_repeats() -> None:
+    text = "Acme Technologies Pvt Ltd won; later Acme Technologies Pvt Ltd lost"
+    first = "Acme Technologies Pvt Ltd"
+    entities = [
+        PIIEntity(
+            pii_type=PIIType.COMPANY,
+            text=first,
+            start=0,
+            end=len(first),
+            source="ner:spacy",
+            priority=PRIORITY_REGEX,
+        )
+    ]
+    expanded = expand_occurrences(text, entities)
+    assert len(expanded) == 2
+    assert expanded[0].start == 0
+    assert expanded[1].start == text.rfind(first)
+    assert expanded[1].text == first
+
+
+def test_verify_ignores_original_substring_inside_surrogate() -> None:
+    # Faker may embed a short real token inside an unrelated fake; offset-level
+    # checks still require the source span itself to change.
+    original = "Alpha"
+    entities = [
+        PIIEntity(
+            pii_type=PIIType.COMPANY,
+            text=original,
+            start=0,
+            end=5,
+            source="test",
+            priority=PRIORITY_REGEX,
+            replacement="AlphaBeta Corp",
+        )
+    ]
+    rendered = "AlphaBeta Corp nearby"
+    verify_no_leaks(entities, rendered, original_text=original)
+
+
+def test_cross_block_longer_span_does_not_leave_in_block_repeat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reproduce the prospectus COMPANY pattern without the full doc.
+
+    A longer detection spans two paragraphs (dropped before apply). A shorter
+    company string appears once under that span and once alone. After the
+    cross-block drop, the lone repeat must still be replaced or D7 fails.
+    """
+    company = "Acme Technologies Pvt Ltd"
+    src = _write_docx(
+        tmp_path / "in.docx",
+        [company + " is", " Headquarters listed", company],
+    )
+
+    flat = DocxDocument(src).extract_text()
+    # Longer span starts at the company prefix and crosses into block 1.
+    long_start = flat.find(company)
+    long_end = flat.find("Headquarters") + len("Headquarters")
+    assert "\n" in flat[long_start:long_end]
+    longer_text = flat[long_start:long_end]
+    alone_start = flat.rfind(company)
+    assert alone_start > long_start
+
+    injected = [
+        PIIEntity(
+            pii_type=PIIType.COMPANY,
+            text=longer_text,
+            start=long_start,
+            end=long_end,
+            source="ner:spacy",
+            priority=PRIORITY_REGEX,
+        ),
+        PIIEntity(
+            pii_type=PIIType.COMPANY,
+            text=company,
+            start=alone_start,
+            end=alone_start + len(company),
+            source="ner:spacy",
+            priority=PRIORITY_REGEX,
+        ),
+    ]
+
+    redactor = Redactor(_cfg(use_ner=False, seed=0))
+    monkeypatch.setattr(redactor, "detect", lambda _text: injected)
+
+    dst = tmp_path / "out.docx"
+    result = redactor.redact_document(src, dst)
+    assert dst.exists()
+    out_text = DocxDocument(dst).extract_text()
+    assert company not in out_text
+    assert any(e.pii_type is PIIType.COMPANY for e in result.entities)
 
 
 def test_determinism_two_runs(tmp_path: Path) -> None:

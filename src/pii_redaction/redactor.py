@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from pii_redaction.detectors import get_detectors
@@ -40,6 +40,92 @@ def apply_text(text: str, entities: Sequence[PIIEntity]) -> str:
     return result
 
 
+def expand_occurrences(
+    text: str,
+    entities: Sequence[PIIEntity],
+    *,
+    min_len: int = _LEAK_MIN_LEN,
+    block_end_for_offset: Callable[[int], int] | None = None,
+) -> list[PIIEntity]:
+    """Cover every in-scope occurrence of an already-detected value.
+
+    Detectors (especially NER) can miss later repeats of the same string. D7
+    treats any surviving original as a hard failure, so once a value is known
+    PII, each non-overlapping occurrence must be scheduled for replacement.
+
+    Call this *after* dropping cross-block spans: a longer multi-block hit must
+    not claim a position and then be discarded, leaving a shorter in-block
+    repeat unreplaced.
+    """
+    if not entities:
+        return []
+
+    existing = list(entities)
+    prototypes: dict[str, PIIEntity] = {}
+    for entity in existing:
+        if len(entity.text) >= min_len:
+            prototypes.setdefault(entity.text, entity)
+
+    claimed = [(entity.start, entity.end) for entity in existing]
+    extras: list[PIIEntity] = []
+    for original, proto in sorted(
+        prototypes.items(), key=lambda item: (-len(item[0]), item[0])
+    ):
+        search_from = 0
+        while True:
+            start = text.find(original, search_from)
+            if start < 0:
+                break
+            end = start + len(original)
+            search_from = start + 1
+            if block_end_for_offset is not None:
+                try:
+                    block_end = block_end_for_offset(start)
+                except DocumentError:
+                    continue
+                if end > block_end:
+                    continue
+            if any(cs < end and ce > start for cs, ce in claimed):
+                continue
+            claimed.append((start, end))
+            if any(e.start == start and e.end == end for e in existing):
+                continue
+            extras.append(
+                PIIEntity(
+                    pii_type=proto.pii_type,
+                    text=original,
+                    start=start,
+                    end=end,
+                    source=proto.source,
+                    confidence=proto.confidence,
+                    priority=proto.priority,
+                )
+            )
+
+    if extras:
+        logger.info("expanded same-text occurrences count=%d", len(extras))
+    merged = existing + extras
+    merged.sort(key=lambda e: (e.start, e.end, e.source))
+    return merged
+
+
+def _mask_replacements(text: str, entities: Sequence[PIIEntity]) -> str:
+    """Blank out known surrogates so whole-string leak search ignores them.
+
+    Short originals can reappear as substrings of unrelated Faker output; that
+    is not an unreplaced source span (offset checks cover apply failures).
+    """
+    masked = text
+    replacements = sorted(
+        {entity.replacement for entity in entities if entity.replacement},
+        key=len,
+        reverse=True,
+    )
+    for replacement in replacements:
+        masked = masked.replace(replacement, "\0" * len(replacement))
+    return masked
+
+
 def verify_no_leaks(
     entities: Sequence[PIIEntity],
     rendered: str,
@@ -52,6 +138,7 @@ def verify_no_leaks(
     change under ``apply_text`` (offset-level). Then search ``rendered`` for
     surviving originals, but only for values at least ``_LEAK_MIN_LEN`` long so
     short tokens that appear inside unrelated words do not false-positive.
+    Known surrogate strings are masked before the whole-string scan.
     """
     if original_text is not None:
         for entity in entities:
@@ -61,20 +148,21 @@ def verify_no_leaks(
                 raise LeakDetectedError(entity.pii_type, 1)
             if entity.replacement == entity.text:
                 raise LeakDetectedError(entity.pii_type, 1)
-        expected = apply_text(original_text, entities)
+        expected = _mask_replacements(apply_text(original_text, entities), entities)
         for entity in entities:
             if entity.replacement is None or len(entity.text) < _LEAK_MIN_LEN:
                 continue
             if entity.text in expected:
                 raise LeakDetectedError(entity.pii_type, 1)
 
+    searchable = _mask_replacements(rendered, entities)
     leaks: Counter[PIIType] = Counter()
     for entity in entities:
         if entity.replacement is None:
             continue
         if len(entity.text) < _LEAK_MIN_LEN:
             continue
-        if entity.text in rendered:
+        if entity.text in searchable:
             leaks[entity.pii_type] += 1
             logger.warning(
                 "leak candidate type=%s offsets=%d:%d length=%d",
@@ -136,8 +224,9 @@ class Redactor:
             len(detected),
             len(resolved),
         )
+        expanded = expand_occurrences(text, resolved)
         factory = SurrogateFactory(self.config)
-        assigned = factory.assign(resolved)
+        assigned = factory.assign(expanded)
         logger.info("assigned replacements count=%d", len(assigned))
         redacted = apply_text(text, assigned)
         if self.config.verify_output:
@@ -175,15 +264,25 @@ class Redactor:
         logger.info("resolve input=%d output=%d", len(detected), len(resolved))
 
         # Document apply cannot splice spans that cross paragraph boundaries
-        # (known limitation: multi-block addresses). Drop before assign so leak
-        # verification is not asked to prove replacements we will never make.
+        # (known limitation: multi-block addresses). Drop before expand/assign
+        # so a longer multi-block hit cannot suppress an in-block repeat and
+        # then vanish, and so leak verification is not asked to prove
+        # replacements we will never make.
         applicable = [e for e in resolved if _fits_single_block(doc, e)]
         dropped = len(resolved) - len(applicable)
         if dropped:
             logger.info("dropped cross-block spans count=%d", dropped)
 
+        def _block_end(offset: int) -> int:
+            idx = doc._block_index_for_offset(offset)  # noqa: SLF001
+            return doc._block_spans[idx][1]  # noqa: SLF001
+
+        expanded = expand_occurrences(
+            text, applicable, block_end_for_offset=_block_end
+        )
+
         factory = SurrogateFactory(self.config)
-        assigned = factory.assign(applicable)
+        assigned = factory.assign(expanded)
         logger.info("assigned replacements count=%d", len(assigned))
         mapping = dict(factory.mapping)
         counts = Counter(e.pii_type for e in assigned)

@@ -75,6 +75,9 @@ _LABEL_GAP = re.compile(
     r"^[\s:#\-./]*(?:no\.?|nos\.?|number|num\.?|#)*[\s:#\-./]*$",
     re.IGNORECASE,
 )
+_NON_DIGIT = re.compile(r"\D")
+_YEARISH = re.compile(r"20\d{2}")
+_VERSIONISH_PREFIX = re.compile(r"(?:version|section|ver|v)\s*$", re.IGNORECASE)
 
 
 @runtime_checkable
@@ -109,7 +112,7 @@ def has_birth_cue(text: str, start: int, window: int = 40) -> bool:
 
 
 def luhn_valid(digits: str) -> bool:
-    cleaned = re.sub(r"\D", "", digits)
+    cleaned = _NON_DIGIT.sub("", digits)
     if not cleaned.isdigit() or not (13 <= len(cleaned) <= 19):
         return False
     total = 0
@@ -124,7 +127,7 @@ def luhn_valid(digits: str) -> bool:
 
 
 def card_brand_prefix(digits: str) -> str:
-    d = re.sub(r"\D", "", digits)
+    d = _NON_DIGIT.sub("", digits)
     if d.startswith("4"):
         return "visa"
     if d.startswith(("51", "52", "53", "54", "55")) or (
@@ -139,7 +142,7 @@ def card_brand_prefix(digits: str) -> str:
 
 
 def ssn_structure_valid(value: str) -> bool:
-    digits = re.sub(r"\D", "", value)
+    digits = _NON_DIGIT.sub("", value)
     if len(digits) != 9:
         return False
     area = int(digits[:3])
@@ -330,10 +333,10 @@ class PhoneDetector(RegexDetector):
         start, _, value = self._span(match)
         if _reject_reference(text, start, config):
             return False
-        digits = re.sub(r"\D", "", value)
+        digits = _NON_DIGIT.sub("", value)
         if not (7 <= len(digits) <= 15):
             return False
-        return not bool(re.fullmatch(r"20\d{2}", digits))
+        return not bool(_YEARISH.fullmatch(digits))
 
 
 class SSNDetector(RegexDetector):
@@ -359,7 +362,7 @@ class CreditCardDetector(RegexDetector):
         start, _, value = self._span(match)
         if _reject_reference(text, start, config):
             return False
-        digits = re.sub(r"\D", "", value)
+        digits = _NON_DIGIT.sub("", value)
         if not (13 <= len(digits) <= 19):
             return False
         return luhn_valid(digits)
@@ -373,7 +376,8 @@ class IPAddressDetector(RegexDetector):
         r"(?<![\w.])(?P<value>"
         r"(?:(?:\d{1,3}\.){3}\d{1,3})"
         r"|(?:[A-Fa-f0-9]{0,4}:){2,7}[A-Fa-f0-9]{0,4}"
-        r")(?![\w.])"
+        # Allow trailing sentence punctuation ('.') without truncating compressed IPv6.
+        r")(?![\w:])"
     )
 
     def validate(self, match: re.Match[str], text: str, config: RedactorConfig) -> bool:
@@ -381,7 +385,7 @@ class IPAddressDetector(RegexDetector):
         if _reject_reference(text, start, config):
             return False
         left = text[max(0, start - 16) : start].lower()
-        if re.search(r"(?:version|section|ver|v)\s*$", left):
+        if _VERSIONISH_PREFIX.search(left):
             return False
         try:
             ipaddress.ip_address(value)
@@ -420,14 +424,14 @@ class AddressDetector(RegexDetector):
     pattern = re.compile(
         r"(?P<value>"
         r"\d{1,5}\s+"
-        r".{3,80}?"
+        r"[^\n]{3,80}?"
         r"(?:Road|Rd\.?|Street|St\.?|Lane|Ln\.?|Marg|Nagar|Sector|Block|"
         r"Avenue|Ave\.?|Boulevard|Blvd\.?|Floor|Apt\.?|Apartment|"
         r"P\.?\s*O\.?\s*Box)"
-        r".{0,40}?"
+        r"[^\n]{0,40}?"
         r"\d{5,6}"
         r")",
-        re.IGNORECASE | re.DOTALL,
+        re.IGNORECASE,
     )
 
     def validate(self, match: re.Match[str], text: str, config: RedactorConfig) -> bool:

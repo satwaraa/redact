@@ -1,0 +1,114 @@
+{
+  "source_document": "synthetic://sample_corpus",
+  "extraction_version": "1",
+  "extraction_fingerprint": "sha256:bf8e51a7550d48387161a26058dec9dc4dfd1552801851d717d4feb708742e1a",
+  "extracted_text": "Confidential staff roster \u2014 sample corpus for evaluation (synthetic PII).\n\nContact Ms. Rashi Patil at rashhi.patil@gmail.com or +91 98765 43210.\nAlternate mail: first.last+tag@sub.domain.co.in.\n\nSSN on file: 123-45-6789.\nCard ending group: 4111 1111 1111 1111.\nWorkstation IP: 192.168.1.10 and also 2001:db8::1.\n\nDate of birth 12 March 1988 (DOB recorded).\nHome: 12 MG Road, Bengaluru - 560001.\n\nEmployer: Acme Technologies Pvt Ltd.\nBackup phone (555) 123-4567.\n",
+  "sample": {
+    "is_sample": true,
+    "description": "synthetic multi-type paragraph covering all nine PIIType values",
+    "rationale": "Prospectus lacks SSN/card/IP/DOB; a synthetic labelled corpus keeps metrics regenerable without committing real PII."
+  },
+  "span_conventions": {
+    "honorifics": "excluded",
+    "address_span": "single block only",
+    "dob_requires_cue": true
+  },
+  "entities": [
+    {
+      "id": "s-001",
+      "pii_type": "FULL_NAME",
+      "text": "Rashi Patil",
+      "start": 87,
+      "end": 98,
+      "note": "synthetic sample"
+    },
+    {
+      "id": "s-002",
+      "pii_type": "EMAIL",
+      "text": "rashhi.patil@gmail.com",
+      "start": 102,
+      "end": 124,
+      "note": "synthetic sample"
+    },
+    {
+      "id": "s-003",
+      "pii_type": "PHONE",
+      "text": "+91 98765 43210",
+      "start": 128,
+      "end": 143,
+      "note": "synthetic sample"
+    },
+    {
+      "id": "s-004",
+      "pii_type": "EMAIL",
+      "text": "first.last+tag@sub.domain.co.in",
+      "start": 161,
+      "end": 192,
+      "note": "synthetic sample"
+    },
+    {
+      "id": "s-005",
+      "pii_type": "SSN",
+      "text": "123-45-6789",
+      "start": 208,
+      "end": 219,
+      "note": "synthetic sample"
+    },
+    {
+      "id": "s-006",
+      "pii_type": "CREDIT_CARD",
+      "text": "4111 1111 1111 1111",
+      "start": 240,
+      "end": 259,
+      "note": "synthetic sample"
+    },
+    {
+      "id": "s-007",
+      "pii_type": "IP_ADDRESS",
+      "text": "192.168.1.10",
+      "start": 277,
+      "end": 289,
+      "note": "synthetic sample"
+    },
+    {
+      "id": "s-008",
+      "pii_type": "IP_ADDRESS",
+      "text": "2001:db8::1",
+      "start": 299,
+      "end": 310,
+      "note": "synthetic sample"
+    },
+    {
+      "id": "s-009",
+      "pii_type": "DOB",
+      "text": "12 March 1988",
+      "start": 327,
+      "end": 340,
+      "note": "synthetic sample"
+    },
+    {
+      "id": "s-010",
+      "pii_type": "ADDRESS",
+      "text": "12 MG Road, Bengaluru - 560001",
+      "start": 363,
+      "end": 393,
+      "note": "synthetic sample"
+    },
+    {
+      "id": "s-011",
+      "pii_type": "COMPANY",
+      "text": "Acme Technologies Pvt Ltd",
+      "start": 406,
+      "end": 431,
+      "note": "synthetic sample"
+    },
+    {
+      "id": "s-012",
+      "pii_type": "PHONE",
+      "text": "(555) 123-4567",
+      "start": 446,
+      "end": 460,
+      "note": "synthetic sample"
+    }
+  ]
+}

@@ -34,6 +34,7 @@ markers = [
     "slow: uses the real NER model or the real prospectus document",
 ]
 testpaths = ["tests"]
+pythonpath = ["."]
 
 [tool.ruff]
 target-version = "py311"

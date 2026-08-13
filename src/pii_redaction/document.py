@@ -136,7 +136,7 @@ class DocxDocument:
         self._path = Path(path).resolve()
         try:
             self._doc: _Document = _open_docx(str(self._path))
-        except Exception as exc:  # noqa: BLE001 — wrap as DocumentError
+        except Exception as exc:  # noqa: BLE001: wrap as DocumentError
             raise DocumentError(f"cannot open docx: {self._path}") from exc
         self._blocks: list[TextBlock] = list(self._collect_blocks())
         self._block_spans: list[tuple[int, int]] = []

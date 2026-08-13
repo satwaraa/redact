@@ -29,7 +29,7 @@ def _micro(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def _fmt(value: float | None) -> str:
-    return "—" if value is None else f"{value:.3f}"
+    return "n/a" if value is None else f"{value:.3f}"
 
 
 def compare(
@@ -108,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     print("|---|---:|---:|---:|---:|---:|---:|")
     for row in rows:
         if "error" in row:
-            print(f"| {row['label']} | _unavailable_ | — | — | — | — | — |")
+            print(f"| {row['label']} | _unavailable_ | n/a | n/a | n/a | n/a | n/a |")
             print(f"  # {row['error']}", file=sys.stderr)
             continue
         print(

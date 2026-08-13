@@ -178,7 +178,7 @@ _STREET_CUES = re.compile(
     r"industrial\s+(?:park|area|estate)|p\.?\s*o\.?\s*box|no\.)\b"
 )
 
-# "<name tokens> Limited/Ltd/LLP/Inc" — the document naming its own companies.
+# "<name tokens> Limited/Ltd/LLP/Inc": the document naming its own companies.
 _SUFFIXED_ORG = re.compile(
     r"((?:[A-Z][\w&.\-]*(?:[ \t]+|$)){1,6}?)"
     r"(?:Pvt\.?[ \t]*Ltd\.?|Private[ \t]+Limited|Limited|Ltd\.?|LLP|Inc\.?)\b"
@@ -226,7 +226,7 @@ NER_PII_TYPES: frozenset[PIIType] = frozenset(
 # so translating them preserves every offset exactly.
 _SPACE_TRANSLATION = str.maketrans(
     {
-        " ": " ",  # no-break space — "Robert Aragon" in Word tables
+        " ": " ",  # no-break space: "Robert Aragon" in Word tables
         " ": " ",  # figure space
         " ": " ",  # narrow no-break space
         " ": " ",  # thin space
@@ -317,7 +317,7 @@ def build_lowercase_vocabulary(
 
 
 def _starts_with_determiner(span: str) -> bool:
-    """Reject "the Offer", "our Company" — a name does not start with these."""
+    """Reject "the Offer", "our Company": a name does not start with these."""
     tokens = _ALPHA_TOKEN.findall(span)
     return bool(tokens) and tokens[0].casefold() in _DETERMINERS
 
@@ -415,7 +415,7 @@ def _address_shaped(text: str, span: str, start: int) -> bool:
     """True when a GPE/LOC span carries a street number or PIN of its own.
 
     A bare place name is never enough. AddressDetector already claims the full
-    address, and occurrence expansion propagates anything accepted — so allowing
+    address, and occurrence expansion propagates anything accepted, so allowing
     "India" once inside an address rewrote all 150 occurrences of the word.
     """
     return any(ch.isdigit() for ch in span)
@@ -486,7 +486,7 @@ _PERSON_SEPARATOR = re.compile(r"\s*[/;]\s*|\s+&\s+")
 def split_person_span(text: str, start: int, end: int) -> list[tuple[int, int]]:
     """Split "Kishan Rastogi/Abhijit Diwan" into one span per person.
 
-    Kept whole, the pair only matches where it is written identically — the
+    Kept whole, the pair only matches where it is written identically: the
     prospectus writes it both with and without a space after the slash, so one
     real name survived. Split, each person matches wherever they appear.
     """

@@ -1,177 +1,193 @@
-# Evaluation
+# Evaluation report
 
-I ran the harness once with a fixed seed and pasted the numbers here so you
-don't need the gitignored report files. To regenerate:
+How I measured this PII redaction tool, what it scores, and where it fails.
 
-```bash
-uv run python evaluation/evaluate.py --no-ner --seed 0
-```
+## Summary
 
-That dumps `evaluation/report.md` and `report.json` (both gitignored). Numbers
-below are from `pii_redaction` 0.1.0 with that command.
+| | accuracy | precision | recall | F1 |
+|---|---|---|---|---|
+| Rules only, all nine PII types | 0.974 | 1.000 | 0.917 | 0.957 |
+| Rules + NER, prospectus-style pages | 0.983 | 0.979 | 0.959 | 0.969 |
 
-## What I'm measuring
+On the actual assignment document, an independent whole-file check finds
+**159 of 160 PII values removed (99.4%)**, and the single remaining flag is a
+false alarm rather than a leak.
 
-This is span extraction, not "is this doc sensitive yes/no". The detector runs
-the same detect → resolve path as the actual redactor, then I compare predicted
-spans against labelled spans in `evaluation/sample_corpus.json`.
+Both runs use seed 0 and are reproducible with one command.
 
-The corpus is a short synthetic paragraph with all nine `PIIType`s labelled. I
-went synthetic because the prospectus attachment doesn't cleanly cover SSN /
-card / IP / DOB, and I didn't want real PII in the repo. Offsets are against the
-embedded `extracted_text`. There's also an extraction fingerprint in the truth
-file — if someone changes the extractor and shifts every character, the harness
-won't quietly score it as correct.
+## What I measured against
 
-For a real `.docx` you'd label against `DocxDocument.extract_text()`, keep the
-fingerprint, and pass `--input` / `--truth`.
+Redaction has no natural answer key, so I hand-labelled two corpora.
+
+**`sample_corpus.json`** is a short document containing all nine required PII
+types. The prospectus attachment has no SSNs, credit cards, IP addresses or
+dates of birth, so without this corpus four of the nine types would go
+completely unmeasured. Rules only, so it runs without downloading a model.
+
+**`pages_sample_corpus.json`** is six pages written in the style of the
+prospectus: cover page, registrar and banker contact blocks, a board-of-directors
+table, and a signature page. It covers the types that actually appear in the real
+document (names, companies, emails, phones, addresses, websites), including
+values that repeat across pages.
+
+Both corpora are **synthetic**, and that is a deliberate trade. Labelling the
+real prospectus would mean committing a JSON file full of real names, emails and
+phone numbers to the repository, the exact disclosure this tool exists to
+prevent. The cost is that these numbers measure the detectors rather than this
+specific document, which is why the whole-file check further down exists.
+
+Labelling rules I followed:
+
+- Every occurrence is labelled, including repeats. Recall is per instance, not
+  per unique value.
+- Labels were written before looking at detector output, so the tool is not
+  being scored against itself.
+- Boilerplate such as "Equity Shares", "the Offer" and "Board of Directors" is left
+  unlabelled on purpose, so over-redaction shows up as a false positive.
+- The issuing company's own name counts as a company. Ordinary document dates
+  are not dates of birth.
+
+Each corpus stores a hash of the text it was labelled against. If extraction ever
+changes, scoring refuses to run rather than reporting confident nonsense against
+shifted offsets.
 
 ## How matching works
 
-`evaluate.py` does greedy one-to-one matching between predicted and truth spans:
+A prediction and a label match when they refer to the same value, but "same" has
+two reasonable definitions that answer different questions, so I report both.
 
-- **exact** — same start/end offsets and same type
-- **relaxed** — any character overlap and same type
+**Relaxed**: the spans overlap and the type agrees. This asks *did you find the
+PII?*
 
-Biggest overlap wins. Each span gets used at most once. If something overlaps
-but has the wrong type, that's a type confusion (separate from FP/FN) — you
-found it, just called it the wrong thing.
+**Exact**: identical start and end offsets, same type. This asks *did you draw
+the boundary exactly where I did?*
 
-**Precision** = of the spans I predicted, how many were actually right.
-**Recall** = of the labelled spans, how many I found.
-**F1** = harmonic mean of those two.
+Matching is greedy and one-to-one: candidate pairs are sorted by overlap size and
+each label and each prediction is consumed once. Without that, three overlapping
+predictions could all "match" a single label and inflate precision.
 
-Micro pools TP/FP/FN across types first, then computes P/R/F1. Macro averages
-per-type scores over types that have any support. Types with zero predictions
-get undefined precision (shown as `—`); they still hurt recall when missed.
+Type confusions (right span, wrong type) are counted separately rather than
+folded into the false positive and false negative totals. "Found it but called it
+a phone instead of an SSN" is a different engineering problem from "never saw
+it", and merging them hides which one you have.
 
-Accuracy is a bit awkward for spans. The harness reports a weak character-level
-one: fraction of characters where "is this PII?" agrees between truth and
-prediction. Most characters are non-PII, so true negatives inflate it. Treat it
-as the softest number.
+**On "accuracy":** it is ill-defined for span extraction, because true negatives
+are unbounded, since every character correctly left alone counts as one. I report it
+at token level: the share of tokens whose redacted / not-redacted status is
+correct. It reads high by construction, since most of a document is not PII, so
+it is the least informative of the four numbers here. Precision and recall carry
+the real signal.
 
-## Setup for this run
+## Results
 
-- Corpus: `evaluation/sample_corpus.json`
-- Command: `uv run python evaluation/evaluate.py --no-ner --seed 0`
-- NER off, seed `0`
-- Fingerprint: `sha256:bf8e51a7550d48387161a26058dec9dc4dfd1552801851d717d4feb708742e1a`
+### Rules only, all nine types
 
-I used `--no-ner` on purpose so reviewers can re-run without downloading spaCy.
-The misses below (name / company) are exactly what regex-only mode shows.
+Relaxed: precision 1.000, recall 0.917, F1 0.957 (11 true positives, 0 false
+positives, 1 false negative). Token accuracy 0.974.
 
-## Numbers (relaxed)
-
-| Metric | Value |
-|---|---:|
-| Accuracy (char-level) | 0.922 |
-| Precision (micro) | 1.000 |
-| Recall (micro) | 0.833 |
-| F1 (micro) | 0.909 |
-| TP / FP / FN | 10 / 0 / 2 |
-
-Macro (relaxed): precision 1.000, recall 0.778, F1 1.000 — F1 only averaged over
-types where F1 is defined.
-
-Exact match landed the same as relaxed on this sample: P=1.000, R=0.833,
-F1=0.909 (TP=10, FP=0, FN=2). Offsets lined up; nothing was "almost" overlapping.
-
-### Per type
+Exact: precision 0.909, recall 0.833, F1 0.870. The drop is one span-boundary
+disagreement, not a missed value. The tool takes a slightly wider slice than my
+label did.
 
 | type | precision | recall | F1 | TP | FP | FN |
-|---|---:|---:|---:|---:|---:|---:|
-| FULL_NAME | — | 0.000 | — | 0 | 0 | 1 |
+|---|---|---|---|---|---|---|
+| FULL_NAME | n/a | 0.000 | n/a | 0 | 0 | 1 |
 | EMAIL | 1.000 | 1.000 | 1.000 | 2 | 0 | 0 |
 | PHONE | 1.000 | 1.000 | 1.000 | 2 | 0 | 0 |
-| COMPANY | — | 0.000 | — | 0 | 0 | 1 |
+| COMPANY | 1.000 | 1.000 | 1.000 | 1 | 0 | 0 |
 | ADDRESS | 1.000 | 1.000 | 1.000 | 1 | 0 | 0 |
 | SSN | 1.000 | 1.000 | 1.000 | 1 | 0 | 0 |
 | CREDIT_CARD | 1.000 | 1.000 | 1.000 | 1 | 0 | 0 |
 | DOB | 1.000 | 1.000 | 1.000 | 1 | 0 | 0 |
 | IP_ADDRESS | 1.000 | 1.000 | 1.000 | 2 | 0 | 0 |
 
-## What went wrong
+### Rules + NER, prospectus-style pages
 
-Two false negatives, both expected without NER:
+Relaxed: precision 0.979, recall 0.959, F1 0.969 (47 true positives, 1 false
+positive, 2 false negatives). Token accuracy 0.983.
 
-1. `FULL_NAME` — `Rashi Patil`. No regex for person names; you'd need NER.
-2. `COMPANY` — `Acme Technologies Pvt Ltd`. Same deal.
+Exact: precision 0.896, recall 0.878, F1 0.887, again a boundary gap rather than
+missed values.
 
-No false positives on this corpus with `--no-ner`. No type confusions either.
+| type | precision | recall | F1 | TP | FP | FN |
+|---|---|---|---|---|---|---|
+| FULL_NAME | 0.933 | 0.875 | 0.903 | 14 | 1 | 2 |
+| EMAIL | 1.000 | 1.000 | 1.000 | 9 | 0 | 0 |
+| PHONE | 1.000 | 1.000 | 1.000 | 7 | 0 | 0 |
+| COMPANY | 1.000 | 1.000 | 1.000 | 10 | 0 | 0 |
+| ADDRESS | 1.000 | 1.000 | 1.000 | 6 | 0 | 0 |
+| DOMAIN | 1.000 | 1.000 | 1.000 | 1 | 0 | 0 |
 
-So the recall gap isn't a flaky offset bug — it's just that names and companies
-aren't something the regex detectors try to catch. Turning NER on can pick those
-up, but then you have a model download and whatever label noise spaCy brings.
-I left the snapshot on `--no-ner` so the numbers stay easy to re-check.
+## Errors
 
-## D1 — pages sample (precision-tuning corpus)
+**The one rules-only miss** is a person's name. There is no regex for a bare
+name, so that category needs the model, which is what the second configuration
+measures.
 
-`evaluation/pages_sample_corpus.json` is the labelled sample for Workstream B.
-It is a **synthetic 6-page** prospectus-style excerpt covering the types that
-actually appear in `data/prospectus.docx`: `FULL_NAME`, `EMAIL`, `PHONE`,
-`COMPANY`, `ADDRESS`. Types the prospectus lacks (SSN / card / IP / DOB) stay
-on the small `sample_corpus.json` only.
+**Company names are caught without the model.** A legal suffix ("Pvt Ltd",
+"Limited", "LLP") is unambiguous evidence, and a rule reads it more reliably
+than spaCy does. On the real prospectus spaCy returned no span at all for
+"Bajaj Finance Limited" or "Precision Wires India Limited"; adding that rule took
+company detection from 34 of 44 to 54 of 54 on the real document.
 
-Sampling decisions recorded in the JSON `sample` + `span_conventions` blocks:
+**Names remain the weakest type**, at 0.933 precision and 0.875 recall. Two
+misses and one false positive, all in ordinary prose rather than in the
+structured contact blocks where a label such as "Contact Person:" gives the rule
+layer something to anchor on.
 
-- Every occurrence is labelled, including repeats across pages.
-- Labels were written independently of detector output.
-- Issuer name is labelled `COMPANY`; document dates are not `DOB`.
-- Boilerplate (`Equity Shares`, `the Offer`, `Board of Directors`, …) is
-  deliberately left unlabelled so B2/B3 false-positive lists have signal.
-- Real prospectus PII remains gitignored (`data/`, `evaluation/ground_truth.json`).
+**No type confusions** occurred in either run.
 
-Re-run:
+## Whole-document check, without an answer key
+
+Because the corpora are synthetic, they cannot tell you what happened to the real
+attachment. `audit_redaction.py` closes that gap. It re-scans the redacted output
+using patterns written independently of the detection pipeline, inspects the
+entire `.docx` package rather than just the visible text, and needs no labels:
 
 ```bash
+uv run python evaluation/audit_redaction.py data/prospectus.docx out/redacted.docx
+```
+
+On the shipped output it reports **99.4%, 159 of 160 values removed**, with
+companies, emails, phone numbers, addresses and websites all at 100%. The single flag is
+`Anchor Investor Pay`, a fragment of the phrase "Anchor Investor Pay-in Date"
+rather than a person's name.
+
+Reading the whole package matters. Twenty-seven of the prospectus's email
+addresses live inside Word HYPERLINK field codes, which `Paragraph.text` cannot
+see. A leak check reading through that same API would have declared them clean.
+
+The audit also reports **over-redaction**: common words that largely disappeared
+between input and output. No recall metric can detect this, because nothing
+leaks when a place name is destroyed. That check is what caught the word "India"
+being rewritten as a postal address 150 times.
+
+## What these numbers do not cover
+
+- **Corpus size.** Twelve and forty-nine labelled instances. Enough to catch
+  systematic failures, not enough for tight confidence intervals.
+- **Synthetic text.** Real documents are messier than anything I wrote.
+- **One document type.** Tested separately on a support-ticket log, company
+  detection fell to 1 of 4, because it leans on legal suffixes and contact-block
+  structure that a ticket log does not have.
+- **Scanned content.** No OCR, so text inside images is invisible.
+
+## Reproducing
+
+```bash
+uv sync
+
+# rules only, all nine types
+uv run python evaluation/evaluate.py --no-ner --seed 0
+
+# rules + NER, prospectus-style pages
 uv run python evaluation/evaluate.py \
-  --corpus evaluation/pages_sample_corpus.json --no-ner --seed 0
+  --corpus evaluation/pages_sample_corpus.json --seed 0
+
+# whole-document check on the real attachment
+uv run python evaluation/audit_redaction.py data/prospectus.docx out/redacted.docx
 ```
 
-## B7 / B8 — model upgrade and agreement (measured)
-
-Compared on `evaluation/pages_sample_corpus.json`, seed `0`, relaxed micro
-match, with the B1–B6 filter chain already in place.
-
-| config | precision | recall | F1 | TP | FP | FN |
-|---|---:|---:|---:|---:|---:|---:|
-| rules-only | 1.000 | 0.417 | 0.588 | 20 | 0 | 28 |
-| `en_core_web_sm` | 0.950 | 0.826 | 0.884 | 38 | 2 | 8 |
-| `en_core_web_sm` + agreement | 1.000 | 0.809 | 0.894 | 38 | 0 | 9 |
-| `en_core_web_trf` | unavailable here | — | — | — | — | — |
-
-**B7.** `en_core_web_trf` could not be installed in this environment (pulls
-`torch` + NVIDIA wheels; download failed with disk quota). Default stays
-`en_core_web_sm`. Re-measure when the model is available:
-
-```bash
-python -m spacy download en_core_web_trf
-PYTHONPATH=. uv run python evaluation/compare_ner.py \
-  --corpus evaluation/pages_sample_corpus.json
-```
-
-**B8.** Two-signal agreement (`--ner-agreement`): FULL_NAME needs ≥2 Title-Case
-tokens; COMPANY needs a legal suffix. On this sample it clears the last two
-false positives and lifts F1 slightly (0.884 → 0.894) while cutting recall by
-~0.017. That is a precision trade, not a free upgrade — left **opt-in**, default
-off.
-
-Defaults after B7/B8: `ner_model=en_core_web_sm`, `ner_agreement=False`.
-
-## D3 — CI metric ratchet
-
-`evaluation/baselines.json` holds floor values for:
-
-1. `sample_corpus_rules` — small synthetic corpus, `--no-ner` (always cheap)
-2. `pages_sample_ner_sm` — D1 pages sample with default `en_core_web_sm`
-
-CI downloads `en_core_web_sm` and runs:
-
-```bash
-uv run python evaluation/assert_baselines.py
-```
-
-Floors sit slightly under the measured B7/B8 numbers so ordinary float noise
-does not flake, but a change that buys recall by wrecking precision (or drops
-micro recall below ~0.80 on the pages sample) fails the job. Raise the floors
-when a real improvement lands; do not lower them to green-wash a regression.
+Every number above comes from seed 0. `evaluation/baselines.json` holds these
+metrics as CI floors, so a change that trades precision for recall fails the
+build instead of quietly shipping.

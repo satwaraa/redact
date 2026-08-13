@@ -389,7 +389,7 @@ class PhoneDetector(RegexDetector):
     name = "phone"
     pii_type = PIIType.PHONE
     priority = PRIORITY_REGEX
-    # Horizontal whitespace only — ``\s`` would stitch digits across paragraphs
+    # Horizontal whitespace only: ``\s`` would stitch digits across paragraphs
     # (table cells, "December YYYY" + day) into false phones.
     pattern = re.compile(
         r"(?<!\w)"
@@ -512,13 +512,13 @@ class AddressDetector(RegexDetector):
     priority = PRIORITY_REGEX
     # Two openers, both ending in a PIN: "12 MG Road, Bengaluru - 560001"
     # (number then street type) and "Plot 19, MIDC, Pune - 411019" (address
-    # keyword then number) — Indian addresses often carry no street type.
+    # keyword then number): Indian addresses often carry no street type.
     pattern = re.compile(
         r"(?P<value>"
         r"(?:"
         r"\d{1,5}\s+[^\n]{3,80}?"
         # Locality words count too: "8 Banjara Hills, Hyderabad - 500034" has
-        # no street type. The trailing guard matters — an unbounded "St" matches
+        # no street type. The trailing guard matters: an unbounded "St" matches
         # inside "system".
         r"\b(?:Road|Rd|Street|St|Lane|Ln|Marg|Nagar|Sector|Block|"
         r"Avenue|Ave|Boulevard|Blvd|Floor|Apt|Apartment|"
@@ -576,7 +576,7 @@ class ContactPersonDetector(RegexDetector):
     pattern = re.compile(
         rf"(?:{_PERSON_CUE_LABELS})\s*:?[^\S\n]*\n?[^\S\n]*"
         # Name tokens stay on one line: a span crossing \n cannot be spliced.
-        # Stop tokens are excluded per token rather than rejected afterwards —
+        # Stop tokens are excluded per token rather than rejected afterwards -
         # "Contact Person: Chitra Raste Website" must yield "Chitra Raste",
         # not nothing at all.
         rf"(?P<value>{_NOT_STOP}[A-Z][A-Za-z'’.\-]+"
@@ -594,7 +594,7 @@ class ContactPersonDetector(RegexDetector):
 class DomainDetector(RegexDetector):
     """Website domains: www.x.y, bare company domains, and http(s) URLs.
 
-    Email domains are NOT matched here — an address is redacted as one span by
+    Email domains are NOT matched here: an address is redacted as one span by
     EmailDetector, and overlapping spans would fight in resolution. The email
     surrogate rewrites its own domain through the same consistency map, so both
     forms of a company's domain map to one fake.
@@ -603,7 +603,7 @@ class DomainDetector(RegexDetector):
     name = "domain"
     pii_type = PIIType.DOMAIN
     priority = PRIORITY_REGEX
-    # The final label may carry a stray space — this document contains
+    # The final label may carry a stray space: this document contains
     # "www.kshinternational. com". That variant is restricted to an explicit
     # TLD list so a match cannot run into the following sentence
     # ("see www.foo.com. the rest ...").

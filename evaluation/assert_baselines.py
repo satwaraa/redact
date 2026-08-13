@@ -22,7 +22,7 @@ from pii_redaction.models import ModelUnavailableError  # noqa: E402
 
 
 def _fmt(value: float | None) -> str:
-    return "—" if value is None else f"{value:.3f}"
+    return "n/a" if value is None else f"{value:.3f}"
 
 
 def _check_floor(
@@ -33,7 +33,7 @@ def _check_floor(
     failures: list[str],
 ) -> None:
     if actual is None:
-        failures.append(f"{label}: metric undefined (got —), need ≥ {minimum:.3f}")
+        failures.append(f"{label}: metric undefined (got n/a), need ≥ {minimum:.3f}")
         return
     if actual + 1e-12 < minimum:
         failures.append(f"{label}: {_fmt(actual)} < min {minimum:.3f}")

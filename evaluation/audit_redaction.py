@@ -15,7 +15,7 @@ Two independent views, deliberately kept separate:
   applied   what the tool's own rule detectors find in the source, checked for
             survival in the output. Answers "did it replace what it found?"
   probe     regex/structure patterns written here, owned by nobody in the
-            pipeline. Answers "what did it never see?" — this is the one that
+            pipeline. Answers "what did it never see?": this is the one that
             catches detector gaps, so it is the number to trust.
 
 A probe hit is a candidate, not proof: these patterns are deliberately broad and
@@ -130,7 +130,7 @@ def _probe_values(text: str, name: str, pattern: re.Pattern[str]) -> set[str]:
 
 
 def _package_text(path: Path) -> str:
-    """Every XML part concatenated — catches field codes, headers, rels, metadata."""
+    """Every XML part concatenated: catches field codes, headers, rels, metadata."""
     with zipfile.ZipFile(path) as archive:
         return "\n".join(
             archive.read(n).decode("utf-8", "ignore")
@@ -176,7 +176,7 @@ def audit(source: Path, redacted: Path, *, limit: int = 8) -> dict[str, Any]:
         report["structure"]["blocks_changed"] = changed
         report["structure"]["churn_pct"] = round(100 * changed / max(1, len(src_blocks)), 1)
 
-    # View 1 — did the tool replace what its own rules found?
+    # View 1: did the tool replace what its own rules found?
     config = RedactorConfig(use_ner=False)
     found: dict[str, set[str]] = {}
     for detector in get_detectors(config):
@@ -190,7 +190,7 @@ def audit(source: Path, redacted: Path, *, limit: int = 8) -> dict[str, Any]:
             "values": sorted(survivors)[:limit],
         }
 
-    # View 2 — what did the tool never see? Checks visible text AND the package.
+    # View 2: what did the tool never see? Checks visible text AND the package.
     for name, pattern in PROBES.items():
         values = _probe_values(src_text, name, pattern)
         if not values:
@@ -204,7 +204,7 @@ def audit(source: Path, redacted: Path, *, limit: int = 8) -> dict[str, Any]:
             "values": sorted(visible | buried)[:limit],
         }
 
-    # Score — merge both views into plain categories and count what is gone.
+    # Score: merge both views into plain categories and count what is gone.
     # Values are deduplicated per category so an email seen by both the rules
     # and the probe counts once.
     candidates: dict[str, set[str]] = {}
@@ -237,7 +237,7 @@ def audit(source: Path, redacted: Path, *, limit: int = 8) -> dict[str, Any]:
         "pct": round(100 * removed_total / total, 1) if total else None,
     }
 
-    # Over-redaction — frequent capitalised words that largely vanished.
+    # Over-redaction: frequent capitalised words that largely vanished.
     # A country, a state or a defined term appears many times in running prose
     # and should survive redaction. If "India" occurs 97 times in the source and
     # 0 times in the output, something classified a place name as PII. Recall
@@ -305,7 +305,7 @@ def render(report: dict[str, Any], *, limit: int = 8) -> str:
     out.append("")
     out.append("=" * 66)
     if score["pct"] is None:
-        out.append("REDACTION SCORE   no PII found in the source — nothing to score")
+        out.append("REDACTION SCORE   no PII found in the source: nothing to score")
     else:
         out.append(
             f"REDACTION SCORE   {score['pct']}%   "
@@ -334,13 +334,13 @@ def render(report: dict[str, Any], *, limit: int = 8) -> str:
     out.append("  The score is the share of PII this audit can see that was removed.")
     out.append("  It is not accuracy against a hand-labelled answer key: it cannot")
     out.append("  count PII that neither the tool nor these patterns recognise, so")
-    out.append("  treat it as a floor. Anything under 'still there' is a candidate —")
+    out.append("  treat it as a floor. Anything under 'still there' is a candidate -")
     out.append("  the patterns are broad, so read the values before acting.")
 
     s = report["structure"]
     out.append("")
     out.append("STRUCTURE (did the file survive intact?)")
-    flag = "MATCH" if s["blocks_match"] else "MISMATCH — splicing altered the layout"
+    flag = "MATCH" if s["blocks_match"] else "MISMATCH: splicing altered the layout"
     out.append(f"  blocks {s['blocks'][0]} -> {s['blocks'][1]}  {flag}")
     out.append(f"  chars  {s['chars'][0]} -> {s['chars'][1]}  ({s['chars'][1]-s['chars'][0]:+d})")
     out.append(
@@ -351,7 +351,7 @@ def render(report: dict[str, Any], *, limit: int = 8) -> str:
         out.append(f"  blocks changed {s['blocks_changed']} ({s['churn_pct']}%)")
 
     out.append("")
-    out.append("DETAIL 1 — values the tool's own rules found, and whether they went")
+    out.append("DETAIL 1: values the tool's own rules found, and whether they went")
     if not report["applied"]:
         out.append("  (no rule-based detections)")
     for pii_type, row in sorted(report["applied"].items()):
@@ -362,7 +362,7 @@ def render(report: dict[str, Any], *, limit: int = 8) -> str:
             out.append(f"      {_fmt(row['values'], limit)}")
 
     out.append("")
-    out.append("DETAIL 2 — independent patterns; catches what detection never saw")
+    out.append("DETAIL 2: independent patterns; catches what detection never saw")
     if not report["probe"]:
         out.append("  (no probe matches in source)")
     for name, row in report["probe"].items():
@@ -379,7 +379,7 @@ def render(report: dict[str, Any], *, limit: int = 8) -> str:
     over = report.get("over_redaction", {})
     if over.get("vanished"):
         out.append("")
-        out.append("OVER-REDACTION — common words that mostly disappeared")
+        out.append("OVER-REDACTION: common words that mostly disappeared")
         for row in over["vanished"]:
             out.append(
                 f"  {row['word']:20} {row['in_source']:4} in source"
@@ -391,13 +391,13 @@ def render(report: dict[str, Any], *, limit: int = 8) -> str:
             "  Candidates only: a frequently-named real person belongs here too."
         )
         out.append(
-            "  What does not is ordinary vocabulary — a country, a state, a"
+            "  What does not is ordinary vocabulary: a country, a state, a"
             " defined term."
         )
 
     if report["surrogate_quality"]:
         out.append("")
-        out.append("FAKE VALUE QUALITY — do the replacements look real?")
+        out.append("FAKE VALUE QUALITY: do the replacements look real?")
         cards = report["surrogate_quality"].get("cards")
         if cards:
             out.append(
@@ -423,7 +423,7 @@ def render(report: dict[str, Any], *, limit: int = 8) -> str:
         f"VERDICT  {verdict}   applied leaks {t['applied_leaks']}, probe leaks {t['probe_leaks']}"
     )
     if not t["clean"]:
-        out.append("  Probe hits are candidates — read the values above before acting.")
+        out.append("  Probe hits are candidates: read the values above before acting.")
     return "\n".join(out)
 
 

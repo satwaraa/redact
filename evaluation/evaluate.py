@@ -219,7 +219,7 @@ def score(match_result: MatchResult) -> dict[str, Metrics]:
             fn=sum(m.fn for m in supported),
             type_confusion=sum(m.type_confusion for m in supported),
         )
-        # Store macro as averaged rates via a synthetic Metrics using float fields —
+        # Store macro as averaged rates via a synthetic Metrics using float fields -
         # report layer will average precision/recall explicitly.
         per_type["micro"] = micro
         per_type["macro"] = macro
@@ -251,7 +251,7 @@ def token_accuracy(text: str, truth: Sequence[PIIEntity], predicted: Sequence[PI
 
 
 def _fmt(value: float | None) -> str:
-    return "—" if value is None else f"{value:.3f}"
+    return "n/a" if value is None else f"{value:.3f}"
 
 
 def render_markdown(
@@ -285,7 +285,7 @@ def render_markdown(
     )
     lines.append("")
     lines.append(
-        f"Token-level accuracy (weak): **{accuracy:.3f}** — fraction of characters "
+        f"Token-level accuracy (weak): **{accuracy:.3f}**: fraction of characters "
         "whose PII/non-PII status matches. This is the weakest of the four numbers: "
         "true negatives dominate and span boundary errors barely move it."
     )
@@ -304,7 +304,7 @@ def render_markdown(
                 if (m.tp + m.fp + m.fn) > 0:
                     supported.append(m)
             if not supported:
-                lines.append(f"| {key} | — | — | — | 0 | 0 | 0 | 0 |")
+                lines.append(f"| {key} | n/a | n/a | n/a | 0 | 0 | 0 | 0 |")
                 continue
             precs = [x.precision for x in supported if x.precision is not None]
             recs = [x.recall for x in supported if x.recall is not None]
@@ -330,7 +330,7 @@ def render_markdown(
         m = scores_relaxed[t.value]
         support = m.tp + m.fp + m.fn + m.type_confusion
         if support == 0:
-            lines.append(f"| {t.value} | — | — | — | 0 | 0 | 0 | 0 |")
+            lines.append(f"| {t.value} | n/a | n/a | n/a | 0 | 0 | 0 | 0 |")
         else:
             lines.append(
                 f"| {t.value} | {_fmt(m.precision)} | {_fmt(m.recall)} | {_fmt(m.f1)} | "

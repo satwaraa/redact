@@ -18,6 +18,7 @@ from pii_redaction.models import (
 from pii_redaction.ner import (
     NERDetector,
     clear_nlp_cache,
+    clip_at_newlines,
     iter_text_chunks,
 )
 
@@ -70,6 +71,57 @@ def test_iter_text_chunks_preserves_absolute_offsets() -> None:
     assert chunks[-1][0] + len(chunks[-1][1]) == len(text)
     for i in range(len(chunks) - 1):
         assert chunks[i][0] + len(chunks[i][1]) == chunks[i + 1][0]
+
+
+def test_clip_at_newlines_noop_without_newline() -> None:
+    text = "Acme Technologies Pvt Ltd"
+    assert clip_at_newlines(text, 0, len(text)) == [(0, len(text))]
+
+
+def test_clip_at_newlines_splits_and_strips() -> None:
+    text = "prefix Acme Corp\n  Headquarters end"
+    start = text.index("Acme")
+    end = text.index("end")
+    pieces = clip_at_newlines(text, start, end)
+    assert [(text[s:e], s, e) for s, e in pieces] == [
+        ("Acme Corp", start, start + len("Acme Corp")),
+        ("Headquarters", text.index("Headquarters"), text.index("Headquarters") + len("Headquarters")),
+    ]
+    assert all("\n" not in text[s:e] for s, e in pieces)
+
+
+def test_cross_block_ner_span_is_clipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B1: a span that straddles ``\\n`` must become in-block pieces."""
+    text = "Acme Technologies Pvt Ltd is\nHeadquarters listed"
+    cross = text  # whole string as one ORG, including the join newline
+    assert "\n" in cross
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc([_FakeSpan(cross, 0, "ORG")])
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    entities = NERDetector().detect(text, _cfg())
+    assert entities
+    assert all("\n" not in e.text for e in entities)
+    assert all(text[e.start : e.end] == e.text for e in entities)
+    assert [e.text for e in entities] == [
+        "Acme Technologies Pvt Ltd is",
+        "Headquarters listed",
+    ]
+
+
+def test_cross_block_clip_drops_whitespace_only_piece(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "Acme Corp\n   \nBeta Ltd"
+    cross = text
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc([_FakeSpan(cross, 0, "ORG")])
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    entities = NERDetector().detect(text, _cfg())
+    assert [e.text for e in entities] == ["Acme Corp", "Beta Ltd"]
 
 
 def test_chunk_boundary_entity_gets_absolute_offset(monkeypatch: pytest.MonkeyPatch) -> None:

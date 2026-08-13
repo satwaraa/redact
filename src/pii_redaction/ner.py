@@ -104,6 +104,32 @@ def clear_nlp_cache() -> None:
     _NLP_CACHE.clear()
 
 
+def clip_at_newlines(text: str, start: int, end: int) -> list[tuple[int, int]]:
+    """Split ``text[start:end]`` on ``\\n``; return stripped in-block ``(start, end)``.
+
+    NER often tags spans that cross the block join used by ``extract_text()``.
+    Those spans win resolution on length, then cannot be applied. Clipping keeps
+    the in-block pieces so they remain usable and stop smothering shorter hits.
+    """
+    if start < 0 or end < start or end > len(text):
+        return []
+    span = text[start:end]
+    if "\n" not in span:
+        return [(start, end)] if span else []
+
+    pieces: list[tuple[int, int]] = []
+    offset = start
+    for part in span.split("\n"):
+        if part:
+            lead = len(part) - len(part.lstrip())
+            stripped = part.strip()
+            if stripped:
+                piece_start = offset + lead
+                pieces.append((piece_start, piece_start + len(stripped)))
+        offset += len(part) + 1
+    return pieces
+
+
 def iter_text_chunks(text: str, max_chunk_chars: int) -> list[tuple[int, str]]:
     """Split ``text`` on block (``\\n``) boundaries; return (base_offset, chunk)."""
     if not text:
@@ -205,25 +231,32 @@ class NERDetector:
                 if text[abs_start:abs_end] != span_text:
                     continue
 
-                if pii_type is PIIType.DOB and not _has_birth_cue(text, abs_start):
-                    continue
-                if (
-                    pii_type is PIIType.COMPANY
-                    and span_text.casefold() in NER_ORG_STOPWORDS
-                ):
-                    continue
-
-                results.append(
-                    PIIEntity(
-                        pii_type=pii_type,
-                        text=span_text,
-                        start=abs_start,
-                        end=abs_end,
-                        source=self.name,
-                        confidence=self._fixed_confidence,
-                        priority=self.priority,
+                for piece_start, piece_end in clip_at_newlines(text, abs_start, abs_end):
+                    piece = text[piece_start:piece_end]
+                    if len(piece) < 2:
+                        continue
+                    if re.fullmatch(r"[\W_]+", piece, flags=re.UNICODE):
+                        continue
+                    if pii_type is PIIType.DOB and not _has_birth_cue(
+                        text, piece_start
+                    ):
+                        continue
+                    if (
+                        pii_type is PIIType.COMPANY
+                        and piece.casefold() in NER_ORG_STOPWORDS
+                    ):
+                        continue
+                    results.append(
+                        PIIEntity(
+                            pii_type=pii_type,
+                            text=piece,
+                            start=piece_start,
+                            end=piece_end,
+                            source=self.name,
+                            confidence=self._fixed_confidence,
+                            priority=self.priority,
+                        )
                     )
-                )
 
         for label, count in sorted(unmapped.items()):
             logger.debug("ner unmapped label=%s count=%d", label, count)

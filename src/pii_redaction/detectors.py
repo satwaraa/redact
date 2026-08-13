@@ -447,8 +447,97 @@ class AddressDetector(RegexDetector):
         return any(ch.isdigit() for ch in value)
 
 
+# Tokens that end a name capture: a label, not part of the person's name.
+_NAME_STOP_TOKENS: frozenset[str] = frozenset(
+    {
+        "website", "telephone", "tel", "email", "e-mail", "fax", "address",
+        "sebi", "registration", "number", "investor", "grievance", "contact",
+        "person", "compliance", "officer", "company", "secretary", "limited",
+        "private", "ltd", "llp", "pvt", "corporate", "registered", "office",
+        "designation", "din", "membership", "firm", "regd",
+    }
+)
+
+# Cues that introduce a named individual in a prospectus contact block.
+_PERSON_CUE_LABELS = r"Contact\s+Person|Compliance\s+Officer|Company\s+Secretary"
+
+# Guard placed before every name token so a label can never be consumed.
+_NOT_STOP = (
+    "(?!(?i:"
+    + "|".join(sorted((re.escape(t) for t in _NAME_STOP_TOKENS), key=len, reverse=True))
+    + r")\b)"
+)
+
+
+class ContactPersonDetector(RegexDetector):
+    """Names introduced by an explicit label, e.g. "Contact Person: Kishan Rastogi".
+
+    A prospectus states its real individuals in a fixed structural position, so
+    they can be found by rule rather than by model. Measured on the deliverable:
+    of 15 distinct "Contact Person" names, spaCy alone missed 7.
+
+    Higher priority than NER so a labelled name wins the span outright.
+    """
+
+    name = "contact_person"
+    pii_type = PIIType.FULL_NAME
+    priority = PRIORITY_REGEX
+    pattern = re.compile(
+        rf"(?:{_PERSON_CUE_LABELS})\s*:?[^\S\n]*\n?[^\S\n]*"
+        # Name tokens stay on one line: a span crossing \n cannot be spliced.
+        # Stop tokens are excluded per token rather than rejected afterwards —
+        # "Contact Person: Chitra Raste Website" must yield "Chitra Raste",
+        # not nothing at all.
+        rf"(?P<value>{_NOT_STOP}[A-Z][A-Za-z'’.\-]+"
+        rf"(?:[^\S\n]+{_NOT_STOP}[A-Z][A-Za-z'’.\-]+){{1,4}})"
+    )
+
+    def validate(self, match: re.Match[str], text: str, config: RedactorConfig) -> bool:
+        value = match.group("value")
+        tokens = [t for t in re.split(r"\s+", value) if t]
+        if len(tokens) < 2:
+            return False
+        return all(t.casefold().strip(".") not in _NAME_STOP_TOKENS for t in tokens)
+
+
+class DomainDetector(RegexDetector):
+    """Website domains: www.x.y, bare company domains, and http(s) URLs.
+
+    Email domains are NOT matched here — an address is redacted as one span by
+    EmailDetector, and overlapping spans would fight in resolution. The email
+    surrogate rewrites its own domain through the same consistency map, so both
+    forms of a company's domain map to one fake.
+    """
+
+    name = "domain"
+    pii_type = PIIType.DOMAIN
+    priority = PRIORITY_REGEX
+    # The final label may carry a stray space — this document contains
+    # "www.kshinternational. com". That variant is restricted to an explicit
+    # TLD list so a match cannot run into the following sentence
+    # ("see www.foo.com. the rest ...").
+    _SPACED_TLD = r"(?:\.[^\S\n](?:com|net|org|in|co|uk|io|gov|edu|info|biz))?"
+    pattern = re.compile(
+        r"(?<![\w@.])(?P<value>"
+        rf"(?:https?://)?www\.[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*{_SPACED_TLD}"
+        rf"|https?://[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+{_SPACED_TLD}"
+        r")(?![\w@])"
+    )
+
+    def validate(self, match: re.Match[str], text: str, config: RedactorConfig) -> bool:
+        value = match.group("value")
+        host = re.sub(r"^https?://", "", value)
+        labels = [label.strip() for label in host.split(".")]
+        if len(labels) < 2 or not labels[-1].isalpha() or len(labels[-1]) < 2:
+            return False
+        # An address immediately to the left means this is an email's domain.
+        return "@" not in text[max(0, match.start("value") - 1) : match.start("value")]
+
+
 # Register instances (order here is documentation; get_detectors sorts by priority).
 register(EmailDetector())
+register(ContactPersonDetector())
+register(DomainDetector())
 register(PhoneDetector())
 register(AddressDetector())
 register(SSNDetector())
@@ -466,6 +555,9 @@ RULE_BASED_TYPES: frozenset[PIIType] = frozenset(
         PIIType.CREDIT_CARD,
         PIIType.IP_ADDRESS,
         PIIType.DOB,
+        PIIType.DOMAIN,
+        # FULL_NAME also has a rule-based path via ContactPersonDetector,
+        # though NER remains its primary detector.
     }
 )
 

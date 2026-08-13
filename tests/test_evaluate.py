@@ -153,7 +153,7 @@ def test_pages_sample_corpus_is_consistent() -> None:
     assert sample["pages"] == 6
     assert text.count("PAGE ") == 6
     types = {row["pii_type"] for row in data["entities"]}
-    assert types == {"FULL_NAME", "EMAIL", "PHONE", "COMPANY", "ADDRESS"}
+    assert types == {"FULL_NAME", "EMAIL", "PHONE", "COMPANY", "ADDRESS", "DOMAIN"}
     # Sanity: committed file still matches its own fingerprint field
     assert data["extraction_fingerprint"] == extraction_fingerprint(text)
     # Reload via Path to ensure JSON is well-formed on disk

@@ -190,7 +190,11 @@ def test_name_email_coherence() -> None:
     tokens = [t for t in re.split(r"[^\w]+", fake_name.casefold()) if t]
     assert len(tokens) >= 2
     assert local == f"{tokens[0]}.{tokens[-1]}"
-    assert fake_email.endswith("@gmail.com")
+    # The domain is replaced too: keeping "@gmail.com" is harmless, but keeping
+    # "@kshinternational.com" beside a redacted company name is not, and the
+    # rule cannot depend on recognising which domains are identifying.
+    assert not fake_email.endswith("@gmail.com")
+    assert fake_email.endswith(".com")
 
 
 def test_independent_email_when_not_linked_to_name() -> None:
@@ -200,8 +204,41 @@ def test_independent_email_when_not_linked_to_name() -> None:
     ]
     out = SurrogateFactory(_cfg(0)).assign(entities)
     assert out[1].replacement is not None
-    assert out[1].replacement.endswith("@example.com")
+    assert not out[1].replacement.endswith("@example.com")
+    assert out[1].replacement.endswith(".com")
     assert "rohan" not in out[1].replacement.casefold()
+
+
+def test_email_and_website_domains_map_consistently() -> None:
+    """The reversibility fix: one real domain gets exactly one fake domain."""
+    entities = [
+        _entity("KSH International Limited", PIIType.COMPANY, start=0),
+        _entity("ipo@kshinternational.com", PIIType.EMAIL, start=40),
+        _entity("www.kshinternational.com", PIIType.DOMAIN, start=80),
+        _entity("cs@kshinternational.com", PIIType.EMAIL, start=120),
+    ]
+    out = SurrogateFactory(_cfg(0)).assign(entities)
+    email_domain = out[1].replacement.split("@", 1)[1]
+    website = out[2].replacement
+    second_domain = out[3].replacement.split("@", 1)[1]
+
+    assert email_domain == second_domain
+    assert website == f"www.{email_domain}"
+    assert "kshinternational" not in " ".join(e.replacement for e in out).casefold()
+
+
+def test_domain_surrogate_preserves_shape() -> None:
+    factory = SurrogateFactory(_cfg(1))
+    cases = [
+        ("www.example.co.in", r"www\.[a-z0-9]+\.co\.in"),
+        ("https://www.example.com", r"https://www\.[a-z0-9]+\.com"),
+        ("example.org", r"[a-z0-9]+\.org"),
+    ]
+    for original, pattern in cases:
+        fake = factory.assign([_entity(original, PIIType.DOMAIN)])[0].replacement
+        assert fake is not None
+        assert re.fullmatch(pattern, fake), (original, fake)
+        assert fake != original
 
 
 def test_no_fake_equals_own_original() -> None:

@@ -72,6 +72,14 @@
       "note": "pages sample"
     },
     {
+      "id": "d-001",
+      "pii_type": "DOMAIN",
+      "text": "www.ksh-sample.example",
+      "start": 491,
+      "end": 513,
+      "note": "website domain; labelled mechanically (every standalone host)"
+    },
+    {
       "id": "p-006",
       "pii_type": "COMPANY",
       "text": "KSH International Private Limited",

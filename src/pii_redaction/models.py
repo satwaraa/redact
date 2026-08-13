@@ -18,6 +18,10 @@ class PIIType(StrEnum):
     CREDIT_CARD = "CREDIT_CARD"
     DOB = "DOB"
     IP_ADDRESS = "IP_ADDRESS"
+    # Website and email domains. Not named in the assignment, but a company name
+    # is: leaving www.kshinternational.com beside a redacted "KSH International
+    # Limited" makes the company redaction trivially reversible.
+    DOMAIN = "DOMAIN"
 
 
 PRIORITY_VALIDATED = 30

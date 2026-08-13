@@ -10,16 +10,37 @@
       "ner_model": null,
       "ner_agreement": false,
       "min_micro_precision": 0.98,
-      "min_micro_recall": 0.80,
+      "min_micro_recall": 0.8,
       "min_micro_f1": 0.88,
       "per_type": {
-        "EMAIL": {"min_precision": 0.98, "min_recall": 0.98},
-        "PHONE": {"min_precision": 0.98, "min_recall": 0.98},
-        "ADDRESS": {"min_precision": 0.98, "min_recall": 0.98},
-        "SSN": {"min_precision": 0.98, "min_recall": 0.98},
-        "CREDIT_CARD": {"min_precision": 0.98, "min_recall": 0.98},
-        "DOB": {"min_precision": 0.98, "min_recall": 0.98},
-        "IP_ADDRESS": {"min_precision": 0.98, "min_recall": 0.98}
+        "EMAIL": {
+          "min_precision": 0.98,
+          "min_recall": 0.98
+        },
+        "PHONE": {
+          "min_precision": 0.98,
+          "min_recall": 0.98
+        },
+        "ADDRESS": {
+          "min_precision": 0.98,
+          "min_recall": 0.98
+        },
+        "SSN": {
+          "min_precision": 0.98,
+          "min_recall": 0.98
+        },
+        "CREDIT_CARD": {
+          "min_precision": 0.98,
+          "min_recall": 0.98
+        },
+        "DOB": {
+          "min_precision": 0.98,
+          "min_recall": 0.98
+        },
+        "IP_ADDRESS": {
+          "min_precision": 0.98,
+          "min_recall": 0.98
+        }
       }
     },
     {
@@ -28,15 +49,34 @@
       "use_ner": true,
       "ner_model": "en_core_web_sm",
       "ner_agreement": false,
-      "min_micro_precision": 0.90,
-      "min_micro_recall": 0.80,
-      "min_micro_f1": 0.85,
+      "min_micro_precision": 0.9,
+      "min_micro_recall": 0.85,
+      "min_micro_f1": 0.9,
       "per_type": {
-        "EMAIL": {"min_precision": 0.98, "min_recall": 0.98},
-        "PHONE": {"min_precision": 0.98, "min_recall": 0.98},
-        "ADDRESS": {"min_precision": 0.98, "min_recall": 0.95},
-        "FULL_NAME": {"min_precision": 0.85, "min_recall": 0.70},
-        "COMPANY": {"min_precision": 0.80, "min_recall": 0.55}
+        "EMAIL": {
+          "min_precision": 0.98,
+          "min_recall": 0.98
+        },
+        "PHONE": {
+          "min_precision": 0.98,
+          "min_recall": 0.98
+        },
+        "ADDRESS": {
+          "min_precision": 0.98,
+          "min_recall": 0.95
+        },
+        "FULL_NAME": {
+          "min_precision": 0.85,
+          "min_recall": 0.7
+        },
+        "COMPANY": {
+          "min_precision": 0.8,
+          "min_recall": 0.55
+        },
+        "DOMAIN": {
+          "min_precision": 0.98,
+          "min_recall": 0.98
+        }
       }
     }
   ]

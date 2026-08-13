@@ -17,6 +17,12 @@ from pii_redaction.models import (
 )
 
 _MAX_ATTEMPTS: Final = 48
+
+# Public suffixes whose second-to-last label is part of the suffix.
+_SECOND_LEVEL_SUFFIXES: Final = frozenset(
+    {"co", "com", "net", "org", "gov", "edu", "ac", "in", "res"}
+)
+
 _HONORIFICS: Final = ("mr.", "mrs.", "ms.", "miss", "dr.", "prof.", "sri", "shri", "smt.")
 _COMPANY_SUFFIXES: Final = (
     "pvt. ltd.",
@@ -290,10 +296,10 @@ def _gen_ip(original: str, faker: Faker) -> str:
 
 
 def _gen_email(original: str, faker: Faker) -> str:
+    """Fallback only. SurrogateFactory rewrites the domain via its domain map."""
     local, _, domain = original.partition("@")
     if not domain:
         domain = "example.com"
-    # Keep multi-part domains; regenerate local only
     new_local = re.sub(r"[^a-z0-9._+-]", "", faker.user_name().casefold())
     if not new_local:
         new_local = "user"
@@ -304,11 +310,38 @@ def _gen_email(original: str, faker: Faker) -> str:
     return f"{new_local}@{domain.casefold()}"
 
 
+def split_host(value: str) -> tuple[str, str, str]:
+    """Split a URL/host into (scheme+www prefix, registrable label, tld suffix).
+
+    "https://www.hdfcbank.com" -> ("https://www.", "hdfcbank", ".com")
+    "in.mpms.mufg.com"         -> ("", "in.mpms.mufg", ".com")
+    Multi-part public suffixes (.co.in, .org.in, .co.uk) stay in the suffix so a
+    surrogate keeps the same country/registry shape.
+    """
+    prefix_match = re.match(r"^(https?://)?(www\.)?", value, flags=re.IGNORECASE)
+    prefix = prefix_match.group(0) if prefix_match else ""
+    host = value[len(prefix) :]
+    labels = host.split(".")
+    suffix_len = 1
+    if len(labels) >= 3 and labels[-2].lower() in _SECOND_LEVEL_SUFFIXES:
+        suffix_len = 2
+    core = ".".join(labels[:-suffix_len]) or host
+    suffix = "." + ".".join(labels[-suffix_len:]) if len(labels) > suffix_len else ""
+    return prefix, core, suffix
+
+
+def _gen_domain(original: str, faker: Faker) -> str:
+    """Fallback only. SurrogateFactory routes DOMAIN through its domain map."""
+    prefix, _core, suffix = split_host(original)
+    return f"{prefix}{faker.domain_word()}{suffix or '.example'}"
+
+
 Generator = Callable[[str, Faker], str]
 
 GENERATORS: dict[PIIType, Generator] = {
     PIIType.FULL_NAME: _gen_full_name,
     PIIType.EMAIL: _gen_email,
+    PIIType.DOMAIN: _gen_domain,
     PIIType.PHONE: _gen_phone,
     PIIType.COMPANY: _gen_company,
     PIIType.ADDRESS: _gen_address,
@@ -332,6 +365,11 @@ class SurrogateFactory:
         self._mapping: dict[str, str] = {}
         # casefolded real name -> (original display name, fake name)
         self._name_map: dict[str, tuple[str, str]] = {}
+        # casefolded real company -> (original display name, fake company)
+        self._company_map: dict[str, tuple[str, str]] = {}
+        # casefolded real registrable label -> fake label, shared by website
+        # domains and email domains so both forms of a company's domain agree.
+        self._domain_map: dict[str, str] = {}
 
     @property
     def mapping(self) -> Mapping[str, str]:
@@ -375,6 +413,51 @@ class SurrogateFactory:
         self._mapping[entity.text] = value
         return value
 
+    def _derive_domain_label(self, core: str) -> str:
+        """Fake registrable label for ``core``, reusing the company surrogate.
+
+        "kshinternational" belongs to "KSH International Limited"; if that
+        company is already mapped to "Barad Group", the domain becomes
+        "baradgroup" so the redacted document stays internally consistent.
+        """
+        letters = re.sub(r"[^a-z0-9]", "", core.casefold())
+        for real_company, fake_company in self._company_map.values():
+            company_letters = re.sub(r"[^a-z0-9]", "", real_company.casefold())
+            if not company_letters or not letters:
+                continue
+            if letters in company_letters or company_letters.startswith(letters):
+                base, _ = _extract_company_suffix(fake_company)
+                candidate = re.sub(r"[^a-z0-9]", "", (base or fake_company).casefold())
+                if candidate and candidate not in self._domain_map.values():
+                    return candidate
+        for _ in range(_MAX_ATTEMPTS):
+            candidate = re.sub(r"[^a-z0-9]", "", self._faker.domain_word().casefold())
+            if candidate and candidate not in self._domain_map.values():
+                return candidate
+        raise SurrogateCollisionError(
+            f"could not generate a non-colliding domain label after {_MAX_ATTEMPTS} attempts"
+        )
+
+    def _fake_host(self, value: str) -> str:
+        """Rewrite a host/URL through the shared domain map, keeping its shape."""
+        prefix, core, suffix = split_host(value)
+        key = core.casefold()
+        fake_core = self._domain_map.get(key)
+        if fake_core is None:
+            fake_core = self._derive_domain_label(core)
+            self._domain_map[key] = fake_core
+        return f"{prefix}{fake_core}{suffix}"
+
+    def _email_fake(self, email: str) -> str:
+        """Fake local part (name-coherent where possible) plus a mapped domain."""
+        _, _, domain = email.partition("@")
+        coherent = self._coherent_email(email)
+        base = coherent if coherent is not None else _gen_email(email, self._faker)
+        new_local = base.partition("@")[0]
+        if not domain:
+            return base
+        return f"{new_local}@{self._fake_host(domain)}"
+
     def _coherent_email(self, email: str) -> str | None:
         local, _, domain = email.partition("@")
         if not domain:
@@ -400,6 +483,13 @@ class SurrogateFactory:
                 fake = self._allocate(entity)
                 self._name_map[entity.text.casefold()] = (entity.text, fake)
 
+        # Companies before domains and emails: a domain surrogate is derived
+        # from its company's surrogate, so the company must be allocated first.
+        for entity in entities:
+            if entity.pii_type is PIIType.COMPANY:
+                fake = self._allocate(entity)
+                self._company_map[entity.text.casefold()] = (entity.text, fake)
+
         out: list[PIIEntity] = []
         for entity in entities:
             key = (entity.pii_type, normalise_key(entity.pii_type, entity.text))
@@ -409,8 +499,9 @@ class SurrogateFactory:
                 out.append(entity.with_replacement(replacement))
                 continue
             if entity.pii_type is PIIType.EMAIL:
-                coherent = self._coherent_email(entity.text)
-                replacement = self._allocate(entity, fake=coherent)
+                replacement = self._allocate(entity, fake=self._email_fake(entity.text))
+            elif entity.pii_type is PIIType.DOMAIN:
+                replacement = self._allocate(entity, fake=self._fake_host(entity.text))
             else:
                 replacement = self._allocate(entity)
             out.append(entity.with_replacement(replacement))

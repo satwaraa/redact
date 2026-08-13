@@ -338,8 +338,10 @@ def test_registry_covers_rule_based_types_and_protocol() -> None:
         assert det.name
         seen.add(det.pii_type)
     assert seen >= RULE_BASED_TYPES
-    # FULL_NAME / COMPANY are NER-only — must not claim a rule detector yet
-    assert PIIType.FULL_NAME not in seen
+    # FULL_NAME has a rule-based path via ContactPersonDetector — a prospectus
+    # states its individuals in a fixed structural position — but NER remains
+    # its primary detector. COMPANY is still NER-only.
+    assert PIIType.FULL_NAME in seen
     assert PIIType.COMPANY not in seen
 
 
@@ -352,3 +354,51 @@ def test_validated_detectors_outrank_regex() -> None:
     assert by_type[PIIType.EMAIL].priority == PRIORITY_REGEX
     assert by_type[PIIType.PHONE].priority == PRIORITY_REGEX
     assert PRIORITY_VALIDATED > PRIORITY_REGEX
+
+
+def test_contact_person_positives() -> None:
+    cases = [
+        ("Contact Person: Kishan Rastogi\nTelephone: +91 22 4009 4400", "Kishan Rastogi"),
+        ("Contact Person\nAshish Mathew Pulloor\nWebsite", "Ashish Mathew Pulloor"),
+        ("Compliance Officer: Manisha Shukla", "Manisha Shukla"),
+        ("Company Secretary: Chitra Raste", "Chitra Raste"),
+    ]
+    for text, expected in cases:
+        _assert_hit(text, PIIType.FULL_NAME, expected)
+
+
+def test_contact_person_negatives() -> None:
+    # A label following the cue is not a name.
+    for text in (
+        "Contact Person: Website www.example.com",
+        "Contact Person: Registered Office",
+        "Contact Person: Kishan",  # single token
+    ):
+        ents = _detector_for(PIIType.FULL_NAME).detect(text, _cfg())
+        assert ents == [], f"{text!r} -> {[e.text for e in ents]}"
+
+
+def test_contact_person_span_stays_in_one_block() -> None:
+    text = "Contact Person: Hitesh Ramani\nWebsite: www.example.com"
+    ents = _detector_for(PIIType.FULL_NAME).detect(text, _cfg())
+    assert [e.text for e in ents] == ["Hitesh Ramani"]
+    assert all("\n" not in e.text for e in ents)
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("visit www.kshinternational.com today", "www.kshinternational.com"),
+        ("see https://www.hdfcbank.com now", "https://www.hdfcbank.com"),
+        ("portal www.in.mpms.mufg.com here", "www.in.mpms.mufg.com"),
+        ("at www.federalbank.co.in ok", "www.federalbank.co.in"),
+    ],
+)
+def test_domain_positives(text: str, expected: str) -> None:
+    _assert_hit(text, PIIType.DOMAIN, expected)
+
+
+def test_domain_does_not_match_an_email_domain() -> None:
+    text = "write to ipo@kshinternational.com please"
+    ents = _detector_for(PIIType.DOMAIN).detect(text, _cfg())
+    assert ents == [], f"matched inside an email: {[e.text for e in ents]}"

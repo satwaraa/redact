@@ -161,7 +161,7 @@ class TestPIIType:
         assert PIIType(decoded["type"]) is PIIType.FULL_NAME
 
     def test_all_assignment_types_present(self) -> None:
-        expected = {
+        required = {
             "FULL_NAME",
             "EMAIL",
             "PHONE",
@@ -172,7 +172,12 @@ class TestPIIType:
             "DOB",
             "IP_ADDRESS",
         }
-        assert {t.value for t in PIIType} == expected
+        actual = {t.value for t in PIIType}
+        assert required <= actual
+        # Extensions beyond the assignment minimum are deliberate and listed.
+        # DOMAIN: a company name is in scope, and leaving its website domain
+        # makes that redaction reversible.
+        assert actual - required == {"DOMAIN"}
 
 
 class TestRedactorConfigAndResult:

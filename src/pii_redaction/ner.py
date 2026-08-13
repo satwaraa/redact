@@ -105,6 +105,64 @@ _BIRTH_CUES: frozenset[str] = frozenset(
     }
 )
 
+# Person cues near a PERSON span (B4); longer phrases first when matching.
+_PERSON_CUES: tuple[str, ...] = tuple(
+    sorted(
+        {
+            "managing director",
+            "independent director",
+            "non-executive director",
+            "company secretary",
+            "compliance officer",
+            "authorised signatory",
+            "authorized signatory",
+            "contact person",
+            "director",
+            "signatory",
+            "signature",
+            "signed by",
+            "chairman",
+            "mr.",
+            "mrs.",
+            "ms.",
+            "dr.",
+            "shri",
+            "smt.",
+            "s/o",
+            "d/o",
+            "w/o",
+        },
+        key=len,
+        reverse=True,
+    )
+)
+
+_GAZETTEER_BLOCK_CUES = re.compile(
+    r"(?i)\b(?:"
+    r"director|signator(?:y|ies)?|signed\s+by|managing\s+director|"
+    r"independent\s+director|non-executive\s+director|chairman|"
+    r"company\s+secretary|compliance\s+officer|"
+    r"authorised\s+signatory|authorized\s+signatory"
+    r")\b"
+)
+
+_TITLE_CASE_NAME = re.compile(
+    r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})\b"
+)
+
+_LEGAL_SUFFIX = re.compile(
+    r"(?i)\b(?:"
+    r"pvt\.?\s*ltd\.?|private\s+limited|ltd\.?|limited|llp|inc\.?"
+    r")\b"
+)
+
+_CONTACT_BLOCK_CUES = re.compile(
+    r"(?i)\b(?:"
+    r"e-?mail|telephone|tel\.?|phone|fax|website|address|"
+    r"contact\s+person|registered\s+office|corporate\s+office"
+    r")\b"
+)
+
 # Reject NER candidates seen more often than this across the document (B2).
 DEFAULT_NER_MAX_DOC_FREQ = 15
 
@@ -189,6 +247,82 @@ def _doc_frequency(text: str, span: str, cache: dict[str, int]) -> int:
     count = text.casefold().count(key)
     cache[key] = count
     return count
+
+
+def _title_case_token_count(span: str) -> int:
+    """Count Title-Case alphabetic tokens (first upper, rest lower / single upper)."""
+    count = 0
+    for tok in re.findall(r"[A-Za-z][A-Za-z'’\-]*", span):
+        if len(tok) == 1:
+            if tok.isupper():
+                count += 1
+            continue
+        if tok[0].isupper() and tok[1:].islower():
+            count += 1
+    return count
+
+
+def _has_person_cue(text: str, start: int, end: int, window: int = 48) -> bool:
+    """True when a person cue sits near the span (B4)."""
+    left = text[max(0, start - window) : start]
+    right = text[end : min(len(text), end + window)]
+    region = f"{left} {right}".casefold()
+    return any(cue in region for cue in _PERSON_CUES)
+
+
+def build_person_gazetteer(text: str) -> frozenset[str]:
+    """Names harvested from director / signatory lines (B4 gazetteer)."""
+    names: set[str] = set()
+    for block in text.split("\n"):
+        if not _GAZETTEER_BLOCK_CUES.search(block):
+            continue
+        for match in _TITLE_CASE_NAME.finditer(block):
+            name = match.group(1)
+            if _is_org_stopword(name) or _is_field_label(name):
+                continue
+            if _title_case_token_count(name) < 2:
+                continue
+            names.add(name.casefold())
+    return frozenset(names)
+
+
+def _has_legal_suffix(span: str) -> bool:
+    """ORG legal-form suffix (B4)."""
+    return _LEGAL_SUFFIX.search(span) is not None
+
+
+def _in_contact_block(text: str, start: int, *, radius: int = 1) -> bool:
+    """True when this block or a neighbour looks like a contact block (B4)."""
+    block_start, _ = _block_bounds(text, start)
+    idx = text.count("\n", 0, block_start)
+    blocks = text.split("\n")
+    if idx >= len(blocks):
+        return False
+    lo = max(0, idx - radius)
+    hi = min(len(blocks), idx + radius + 1)
+    return _CONTACT_BLOCK_CUES.search("\n".join(blocks[lo:hi])) is not None
+
+
+def _person_positive(
+    text: str,
+    span: str,
+    start: int,
+    end: int,
+    gazetteer: frozenset[str],
+) -> bool:
+    """B4: PERSON needs title-case tokens, a nearby cue, or gazetteer membership."""
+    if _title_case_token_count(span) >= 2:
+        return True
+    if _has_person_cue(text, start, end):
+        return True
+    return span.casefold() in gazetteer
+
+
+def _org_positive(text: str, span: str, start: int) -> bool:
+    """B4: ORG needs a legal suffix or a contact-block context."""
+    if _has_legal_suffix(span):
+        return True
+    return _in_contact_block(text, start)
 
 
 def _load_nlp(model_name: str) -> Any:
@@ -320,6 +454,7 @@ class NERDetector:
         freq_cache: dict[str, int],
         *,
         max_doc_freq: int,
+        gazetteer: frozenset[str],
     ) -> bool:
         if len(piece) < 2:
             return False
@@ -333,6 +468,12 @@ class NERDetector:
         if pii_type is PIIType.DOB and not _has_birth_cue(text, piece_start):
             return False
         if pii_type is PIIType.COMPANY and _is_org_stopword(piece):
+            return False
+        if pii_type is PIIType.FULL_NAME and not _person_positive(
+            text, piece, piece_start, piece_start + len(piece), gazetteer
+        ):
+            return False
+        if pii_type is PIIType.COMPANY and not _org_positive(text, piece, piece_start):
             return False
         if pii_type in _FREQ_FILTER_TYPES:
             if _doc_frequency(text, piece, freq_cache) > max_doc_freq:
@@ -351,6 +492,7 @@ class NERDetector:
         unmapped: dict[str, int] = {}
         freq_cache: dict[str, int] = {}
         max_doc_freq = config.ner_max_doc_freq
+        gazetteer = build_person_gazetteer(text)
 
         for base, chunk in iter_text_chunks(text, self.max_chunk_chars):
             doc = nlp(chunk)
@@ -386,6 +528,7 @@ class NERDetector:
                         piece_start,
                         freq_cache,
                         max_doc_freq=max_doc_freq,
+                        gazetteer=gazetteer,
                     ):
                         continue
                     results.append(

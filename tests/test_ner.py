@@ -107,16 +107,14 @@ def test_cross_block_ner_span_is_clipped(monkeypatch: pytest.MonkeyPatch) -> Non
     assert entities
     assert all("\n" not in e.text for e in entities)
     assert all(text[e.start : e.end] == e.text for e in entities)
-    assert [e.text for e in entities] == [
-        "Acme Technologies Pvt Ltd is",
-        "Headquarters listed",
-    ]
+    # B4: only the piece with a legal suffix survives
+    assert [e.text for e in entities] == ["Acme Technologies Pvt Ltd is"]
 
 
 def test_cross_block_clip_drops_whitespace_only_piece(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    text = "Acme Corp\n   \nBeta Ltd"
+    text = "Acme Corp Ltd\n   \nBeta Ltd"
     cross = text
 
     def _nlp(chunk: str) -> _FakeDoc:
@@ -124,7 +122,7 @@ def test_cross_block_clip_drops_whitespace_only_piece(
 
     monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
     entities = NERDetector().detect(text, _cfg())
-    assert [e.text for e in entities] == ["Acme Corp", "Beta Ltd"]
+    assert [e.text for e in entities] == ["Acme Corp Ltd", "Beta Ltd"]
 
 
 def test_chunk_boundary_entity_gets_absolute_offset(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -174,19 +172,23 @@ def test_date_requires_birth_cue(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_org_stopwords_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
-    text = "see the Prospectus and Acme Corp here"
+    text = "see the Prospectus and Acme Technologies Pvt Ltd here"
 
     def _nlp(chunk: str) -> _FakeDoc:
         return _FakeDoc(
             [
                 _FakeSpan("Prospectus", text.index("Prospectus"), "ORG"),
-                _FakeSpan("Acme Corp", text.index("Acme Corp"), "ORG"),
+                _FakeSpan(
+                    "Acme Technologies Pvt Ltd",
+                    text.index("Acme Technologies Pvt Ltd"),
+                    "ORG",
+                ),
             ]
         )
 
     monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
     entities = NERDetector().detect(text, _cfg())
-    assert [e.text for e in entities] == ["Acme Corp"]
+    assert [e.text for e in entities] == ["Acme Technologies Pvt Ltd"]
     assert entities[0].pii_type is PIIType.COMPANY
 
 
@@ -220,8 +222,8 @@ def test_org_stopword_containment_drops_span(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_doc_freq_filter_rejects_boilerplate(monkeypatch: pytest.MonkeyPatch) -> None:
     # Phrase not on the stopword list, but repeated above the default threshold.
-    phrase = "Zorp Widget Group"
-    text = "\n".join([f"{phrase} appears here"] * 16 + ["Acme Corp once"])
+    phrase = "Zorp Widget Limited"
+    text = "\n".join([f"{phrase} appears here"] * 16 + ["Acme Corp Ltd once"])
 
     def _nlp(chunk: str) -> _FakeDoc:
         ents = []
@@ -232,14 +234,14 @@ def test_doc_freq_filter_rejects_boilerplate(monkeypatch: pytest.MonkeyPatch) ->
                 break
             ents.append(_FakeSpan(phrase, i, "ORG"))
             start = i + 1
-        j = chunk.find("Acme Corp")
+        j = chunk.find("Acme Corp Ltd")
         if j >= 0:
-            ents.append(_FakeSpan("Acme Corp", j, "ORG"))
+            ents.append(_FakeSpan("Acme Corp Ltd", j, "ORG"))
         return _FakeDoc(ents)
 
     monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
     entities = NERDetector().detect(text, _cfg())
-    assert [e.text for e in entities] == ["Acme Corp"]
+    assert [e.text for e in entities] == ["Acme Corp Ltd"]
 
 
 def test_heading_block_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -281,6 +283,70 @@ def test_field_label_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _is_field_label("Contact Person")
     assert _is_heading_block("REGISTRAR TO THE OFFER")
     assert not _is_heading_block("Ada Lovelace")
+
+
+def test_person_requires_positive_signal(monkeypatch: pytest.MonkeyPatch) -> None:
+    text = "Solo met Ada Lovelace near the desk"
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc(
+            [
+                _FakeSpan("Solo", text.index("Solo"), "PERSON"),
+                _FakeSpan("Ada Lovelace", text.index("Ada Lovelace"), "PERSON"),
+            ]
+        )
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    entities = NERDetector().detect(text, _cfg())
+    assert [e.text for e in entities] == ["Ada Lovelace"]
+
+
+def test_person_cue_allows_single_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    text = "Director: Meera reviewed the draft"
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc([_FakeSpan("Meera", text.index("Meera"), "PERSON")])
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    entities = NERDetector().detect(text, _cfg())
+    assert [e.text for e in entities] == ["Meera"]
+
+
+def test_person_gazetteer_from_director_lines() -> None:
+    from pii_redaction.ner import build_person_gazetteer
+
+    text = (
+        "Rajesh Kumar Sharma, Managing Director\n"
+        "Sneha Patel, Independent Director\n"
+        "Unrelated line without cues\n"
+    )
+    gaz = build_person_gazetteer(text)
+    assert "rajesh kumar sharma" in gaz
+    assert "sneha patel" in gaz
+    assert "unrelated line without cues" not in gaz
+
+
+def test_org_requires_legal_suffix_or_contact_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = (
+        "Zorp Holdings\n"
+        "Email: desk@zorp.example\n"
+        "Unrelated paragraph filler\n"
+        "Soft Balloons nearby"
+    )
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc(
+            [
+                _FakeSpan("Zorp Holdings", text.index("Zorp Holdings"), "ORG"),
+                _FakeSpan("Soft Balloons", text.index("Soft Balloons"), "ORG"),
+            ]
+        )
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    entities = NERDetector().detect(text, _cfg())
+    assert [e.text for e in entities] == ["Zorp Holdings"]
 
 
 def test_model_unavailable_names_install_command(

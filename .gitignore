@@ -8,8 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
-data/
-out/
+data/*
+out/*
+!out/redacted.docx
 !data/prospectus.docx
 
 evaluation/ground_truth.json

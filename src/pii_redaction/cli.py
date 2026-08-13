@@ -57,6 +57,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="override the spaCy model name",
     )
     parser.add_argument(
+        "--ner-agreement",
+        action="store_true",
+        help=(
+            "B8: keep FULL_NAME/COMPANY only when the model and a structural "
+            "heuristic agree (title-case name / legal suffix)"
+        ),
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=0,
@@ -137,6 +145,7 @@ def config_from_args(args: argparse.Namespace) -> RedactorConfig:
         seed=args.seed,
         use_ner=not args.no_ner,
         ner_model=args.ner_model or RedactorConfig.default().ner_model,
+        ner_agreement=bool(getattr(args, "ner_agreement", False)),
         redact_reference_numbers=args.redact_reference_numbers,
         verify_output=not args.no_verify,
     )

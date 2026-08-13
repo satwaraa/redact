@@ -392,8 +392,21 @@ def error_analysis_md(
     return "\n".join(lines)
 
 
-def predict_entities(text: str, *, seed: int, use_ner: bool) -> list[PIIEntity]:
-    config = RedactorConfig(seed=seed, use_ner=use_ner, verify_output=False)
+def predict_entities(
+    text: str,
+    *,
+    seed: int,
+    use_ner: bool,
+    ner_model: str = "en_core_web_sm",
+    ner_agreement: bool = False,
+) -> list[PIIEntity]:
+    config = RedactorConfig(
+        seed=seed,
+        use_ner=use_ner,
+        ner_model=ner_model,
+        ner_agreement=ner_agreement,
+        verify_output=False,
+    )
     redactor = Redactor(config)
     detected = redactor.detect(text)
     return resolve(detected)
@@ -405,10 +418,18 @@ def run_evaluation(
     *,
     seed: int,
     use_ner: bool,
+    ner_model: str = "en_core_web_sm",
+    ner_agreement: bool = False,
 ) -> dict[str, Any]:
     assert_truth_consistent(text, truth_data)
     truth = entities_from_truth(truth_data)
-    predicted = predict_entities(text, seed=seed, use_ner=use_ner)
+    predicted = predict_entities(
+        text,
+        seed=seed,
+        use_ner=use_ner,
+        ner_model=ner_model,
+        ner_agreement=ner_agreement,
+    )
     exact = match(truth, predicted, "exact")
     relaxed = match(truth, predicted, "relaxed")
     scores_exact = score(exact)
@@ -432,6 +453,8 @@ def run_evaluation(
         "version": pii_redaction.__version__,
         "seed": seed,
         "use_ner": use_ner,
+        "ner_model": ner_model if use_ner else None,
+        "ner_agreement": ner_agreement if use_ner else False,
         "extraction_fingerprint": fingerprint,
         "sample": sample,
         "accuracy_token": acc,
@@ -468,6 +491,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--no-ner", action="store_true")
+    p.add_argument(
+        "--ner-model",
+        default="en_core_web_sm",
+        help="spaCy model when NER is enabled (default: en_core_web_sm)",
+    )
+    p.add_argument(
+        "--ner-agreement",
+        action="store_true",
+        help="B8: require structural heuristic agreement for FULL_NAME/COMPANY",
+    )
     p.add_argument(
         "--out",
         type=Path,
@@ -509,6 +542,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         truth_data,
         seed=args.seed,
         use_ner=not args.no_ner,
+        ner_model=args.ner_model,
+        ner_agreement=args.ner_agreement,
     )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(result["markdown"], encoding="utf-8")

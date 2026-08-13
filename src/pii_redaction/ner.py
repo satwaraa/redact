@@ -325,6 +325,16 @@ def _org_positive(text: str, span: str, start: int) -> bool:
     return _in_contact_block(text, start)
 
 
+def _person_rule_agree(span: str) -> bool:
+    """B8 structural heuristic for PERSON: looks like a multi-token name."""
+    return _title_case_token_count(span) >= 2
+
+
+def _org_rule_agree(span: str) -> bool:
+    """B8 structural heuristic for ORG: carries a legal-form suffix."""
+    return _has_legal_suffix(span)
+
+
 def _load_nlp(model_name: str) -> Any:
     cached = _NLP_CACHE.get(model_name)
     if cached is not None:
@@ -429,11 +439,13 @@ class NERDetector:
         confidence_threshold: float = 0.5,
         max_chunk_chars: int = 80_000,
         max_doc_freq: int = DEFAULT_NER_MAX_DOC_FREQ,
+        require_agreement: bool = False,
     ) -> None:
         self.model_name = model_name
         self.confidence_threshold = confidence_threshold
         self.max_chunk_chars = max_chunk_chars
         self.max_doc_freq = max_doc_freq
+        self.require_agreement = require_agreement
         # spaCy en_core_web_sm does not emit per-entity scores by default;
         # use a fixed documented confidence rather than inventing a score.
         self._fixed_confidence = 1.0
@@ -455,6 +467,7 @@ class NERDetector:
         *,
         max_doc_freq: int,
         gazetteer: frozenset[str],
+        require_agreement: bool,
     ) -> bool:
         if len(piece) < 2:
             return False
@@ -475,6 +488,12 @@ class NERDetector:
             return False
         if pii_type is PIIType.COMPANY and not _org_positive(text, piece, piece_start):
             return False
+        # B8: model already proposed the span; also require the structural rule.
+        if require_agreement:
+            if pii_type is PIIType.FULL_NAME and not _person_rule_agree(piece):
+                return False
+            if pii_type is PIIType.COMPANY and not _org_rule_agree(piece):
+                return False
         if pii_type in _FREQ_FILTER_TYPES:
             if _doc_frequency(text, piece, freq_cache) > max_doc_freq:
                 return False
@@ -492,6 +511,7 @@ class NERDetector:
         unmapped: dict[str, int] = {}
         freq_cache: dict[str, int] = {}
         max_doc_freq = config.ner_max_doc_freq
+        require_agreement = config.ner_agreement
         gazetteer = build_person_gazetteer(text)
 
         for base, chunk in iter_text_chunks(text, self.max_chunk_chars):
@@ -529,6 +549,7 @@ class NERDetector:
                         freq_cache,
                         max_doc_freq=max_doc_freq,
                         gazetteer=gazetteer,
+                        require_agreement=require_agreement,
                     ):
                         continue
                     results.append(

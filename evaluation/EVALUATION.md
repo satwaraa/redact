@@ -127,3 +127,33 @@ Re-run:
 uv run python evaluation/evaluate.py \
   --corpus evaluation/pages_sample_corpus.json --no-ner --seed 0
 ```
+
+## B7 / B8 — model upgrade and agreement (measured)
+
+Compared on `evaluation/pages_sample_corpus.json`, seed `0`, relaxed micro
+match, with the B1–B6 filter chain already in place.
+
+| config | precision | recall | F1 | TP | FP | FN |
+|---|---:|---:|---:|---:|---:|---:|
+| rules-only | 1.000 | 0.417 | 0.588 | 20 | 0 | 28 |
+| `en_core_web_sm` | 0.950 | 0.826 | 0.884 | 38 | 2 | 8 |
+| `en_core_web_sm` + agreement | 1.000 | 0.809 | 0.894 | 38 | 0 | 9 |
+| `en_core_web_trf` | unavailable here | — | — | — | — | — |
+
+**B7.** `en_core_web_trf` could not be installed in this environment (pulls
+`torch` + NVIDIA wheels; download failed with disk quota). Default stays
+`en_core_web_sm`. Re-measure when the model is available:
+
+```bash
+python -m spacy download en_core_web_trf
+PYTHONPATH=. uv run python evaluation/compare_ner.py \
+  --corpus evaluation/pages_sample_corpus.json
+```
+
+**B8.** Two-signal agreement (`--ner-agreement`): FULL_NAME needs ≥2 Title-Case
+tokens; COMPANY needs a legal suffix. On this sample it clears the last two
+false positives and lifts F1 slightly (0.884 → 0.894) while cutting recall by
+~0.017. That is a precision trade, not a free upgrade — left **opt-in**, default
+off.
+
+Defaults after B7/B8: `ner_model=en_core_web_sm`, `ner_agreement=False`.

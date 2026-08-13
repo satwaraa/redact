@@ -285,6 +285,58 @@ def test_field_label_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     assert not _is_heading_block("Ada Lovelace")
 
 
+def test_agreement_rejects_cue_only_person(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B8: single-token name with a cue passes B4 but fails structural agreement."""
+    text = "Director: Meera reviewed the draft"
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc([_FakeSpan("Meera", text.index("Meera"), "PERSON")])
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    assert [e.text for e in NERDetector().detect(text, _cfg())] == ["Meera"]
+    assert (
+        NERDetector(require_agreement=True).detect(text, _cfg(ner_agreement=True)) == []
+    )
+
+
+def test_agreement_rejects_contact_block_org_without_suffix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "Zorp Holdings\nEmail: desk@zorp.example"
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc(
+            [_FakeSpan("Zorp Holdings", text.index("Zorp Holdings"), "ORG")]
+        )
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    assert [e.text for e in NERDetector().detect(text, _cfg())] == ["Zorp Holdings"]
+    assert (
+        NERDetector(require_agreement=True).detect(text, _cfg(ner_agreement=True)) == []
+    )
+
+
+def test_agreement_keeps_legal_suffix_org(monkeypatch: pytest.MonkeyPatch) -> None:
+    text = "Acme Components Private Limited filed today"
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc(
+            [
+                _FakeSpan(
+                    "Acme Components Private Limited",
+                    text.index("Acme Components Private Limited"),
+                    "ORG",
+                )
+            ]
+        )
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    entities = NERDetector(require_agreement=True).detect(
+        text, _cfg(ner_agreement=True)
+    )
+    assert [e.text for e in entities] == ["Acme Components Private Limited"]
+
+
 def test_person_requires_positive_signal(monkeypatch: pytest.MonkeyPatch) -> None:
     text = "Solo met Ada Lovelace near the desk"
 

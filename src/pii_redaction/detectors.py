@@ -271,6 +271,7 @@ def get_detectors(config: RedactorConfig) -> list[Detector]:
             model_name=config.ner_model,
             confidence_threshold=config.ner_confidence_threshold,
             max_doc_freq=config.ner_max_doc_freq,
+            require_agreement=config.ner_agreement,
         )
         if ner.emits_for(config.enabled_types):
             detectors.append(ner)

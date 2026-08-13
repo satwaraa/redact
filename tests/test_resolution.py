@@ -225,11 +225,6 @@ def test_address_beats_shorter_ner_gpe_overlap() -> None:
     _assert_invariants([gpe, address], out)
 
 
-# ---------------------------------------------------------------------------
-# 3–4. Degenerate + mixed corpus invariants
-# ---------------------------------------------------------------------------
-
-
 def test_empty_and_single() -> None:
     assert resolve([]) == []
     alone = _entity(1, 4, source="only")
@@ -274,10 +269,6 @@ def test_mixed_corpus_invariants() -> None:
     assert {e.source for e in out} == {"a", "c", "d", "validated"}
 
 
-# ---------------------------------------------------------------------------
-# 5. assert_non_overlapping
-# ---------------------------------------------------------------------------
-
 
 def test_assert_non_overlapping_accepts_resolved() -> None:
     entities = [_entity(0, 3), _entity(5, 8)]
@@ -294,11 +285,6 @@ def test_assert_non_overlapping_raises_without_values() -> None:
     message = str(exc_info.value)
     assert "0:" in message
     assert secret not in message
-
-
-# ---------------------------------------------------------------------------
-# Property-based: random span sets
-# ---------------------------------------------------------------------------
 
 
 @st.composite

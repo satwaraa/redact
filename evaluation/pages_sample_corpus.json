@@ -1,0 +1,419 @@
+{
+  "source_document": "synthetic://pages_sample_corpus",
+  "extraction_version": "1",
+  "extraction_fingerprint": "sha256:7dca41bfd9483fcce1cb2f6d0d22a50a71c69b1c42faeb4f8477f0503d542631",
+  "extracted_text": "PAGE 1 \u2014 Cover and offer summary\nDRAFT RED HERRING PROSPECTUS\nPlease read Section 32 of the Companies Act, 2013\nBook Built Offer\n\nKSH International Limited\nEquity Shares of face value of \u20b95 each\nThe Offer comprises a Fresh Issue and an Offer for Sale.\nRisk Management Committee and Non-Resident investors are referenced herein.\n\nRegistered Office: 12 MG Road, Bengaluru - 560001\nContact Person: Ananya Krishnan\nTelephone: +91 22 4009 4400\nE-mail: ananya.krishnan@ksh-sample.example\nWebsite: www.ksh-sample.example\n\nPAGE 2 \u2014 Corporate information\nOur Company was incorporated as KSH International Private Limited.\nThe Company later converted to KSH International Limited.\n\nRegistrar to the Offer: Link Intime India Private Limited\nAddress: C-101, 247 Park, L.B.S. Marg, Vikhroli West, Mumbai - 400083\nTel: +91 22 4918 6000\nEmail: ksh.ipo@linkintime-sample.example\nContact Person: Rohan Mehta\n\nBook Running Lead Manager: Nuvama Wealth Management Limited\nEmail: ksh.ipo@nuvama-sample.example\nTelephone: +91 22 6636 4900\nContact Person: Priya Nair\n\nPAGE 3 \u2014 Board of Directors (extract)\nThe Board of Directors of our Company is as follows:\n\nRajesh Kumar Sharma, Chairman and Managing Director\nAddress: 45 Residency Road, Bengaluru - 560025\n\nSneha Patel, Independent Director\nAddress: 8 Banjara Hills, Hyderabad - 500034\n\nVikram Singh, Non-Executive Director\nDIN and other reference numbers are not PII for this evaluation policy.\n\nCompany Secretary and Compliance Officer: Meera Iyer\nEmail: meera.iyer@ksh-sample.example\nTel: +91 80 4123 7788\n\nPAGE 4 \u2014 Bankers to the Offer\nHDFC Bank Limited\nEmail: manisha.shukla@hdfc-sample.example\nTelephone: +91 22 4009 4400\nContact Person: Manisha Shukla\n\nICICI Bank Limited\nEmail: cherag.gyara@icici-sample.example\nContact Person: Cherag Gyara\n\nEscrow Collection Bank also acts as Refund Bank.\nAllotment of Equity Shares is subject to the Offer terms.\nAnchor Investor portion may be allocated as described in this Prospectus.\n\nPAGE 5 \u2014 Objects and repeated contacts\nObjects of the Offer include capital expenditure and general corporate purposes.\nFace value and Offer Price will be determined through the Book Building Process.\n\nInvestors may contact Ananya Krishnan (same Contact Person as on page 1)\nat ananya.krishnan@ksh-sample.example or +91 22 4009 4400.\nThey may also write to Rohan Mehta at ksh.ipo@linkintime-sample.example.\n\nRegistered Office again: 12 MG Road, Bengaluru - 560001\nRegistrar again: Link Intime India Private Limited\n\nPAGE 6 \u2014 Declarations and signatures\nSigned by the Directors of our Company\n\nRajesh Kumar Sharma\nSneha Patel\nVikram Singh\n\nFor KSH International Limited\nMeera Iyer\nCompany Secretary and Compliance Officer\n\nPlace: Bengaluru\nDate: 15 January 2024\n\nSelling Shareholder: Acme Components Private Limited\nAuthorised Signatory: Arjun Desai\nEmail: arjun.desai@acme-sample.example\nPhone: +91 98765 43210\nAddress: Plot 19, MIDC, Pune - 411019\n",
+  "sample": {
+    "is_sample": true,
+    "description": "synthetic 6-page prospectus-style sample covering types present in data/prospectus.docx (FULL_NAME, EMAIL, PHONE, COMPANY, ADDRESS)",
+    "rationale": "D1 measurement corpus. Real prospectus PII stays gitignored (evaluation/ground_truth.json + data/). This committed sample mirrors prospectus contact/offer pages, labels every occurrence independently of detectors, and leaves boilerplate unlabelled so later precision filters (B2/B3) have FP signal.",
+    "pages": 6,
+    "types_present": [
+      "FULL_NAME",
+      "EMAIL",
+      "PHONE",
+      "COMPANY",
+      "ADDRESS"
+    ],
+    "types_absent": [
+      "SSN",
+      "CREDIT_CARD",
+      "IP_ADDRESS",
+      "DOB"
+    ]
+  },
+  "span_conventions": {
+    "honorifics": "excluded",
+    "address_span": "single block only",
+    "dob_requires_cue": true,
+    "issuer_company_name": "labelled as COMPANY",
+    "document_dates": "not DOB",
+    "boilerplate_orgs": "not labelled (Equity Shares, the Offer, Board of Directors, Prospectus)"
+  },
+  "entities": [
+    {
+      "id": "p-001",
+      "pii_type": "COMPANY",
+      "text": "KSH International Limited",
+      "start": 130,
+      "end": 155,
+      "note": "issuer; labelled per sample policy"
+    },
+    {
+      "id": "p-002",
+      "pii_type": "ADDRESS",
+      "text": "12 MG Road, Bengaluru - 560001",
+      "start": 348,
+      "end": 378,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-003",
+      "pii_type": "FULL_NAME",
+      "text": "Ananya Krishnan",
+      "start": 395,
+      "end": 410,
+      "note": "contact person"
+    },
+    {
+      "id": "p-004",
+      "pii_type": "PHONE",
+      "text": "+91 22 4009 4400",
+      "start": 422,
+      "end": 438,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-005",
+      "pii_type": "EMAIL",
+      "text": "ananya.krishnan@ksh-sample.example",
+      "start": 447,
+      "end": 481,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-006",
+      "pii_type": "COMPANY",
+      "text": "KSH International Private Limited",
+      "start": 578,
+      "end": 611,
+      "note": "pre-conversion issuer name"
+    },
+    {
+      "id": "p-007",
+      "pii_type": "COMPANY",
+      "text": "KSH International Limited",
+      "start": 644,
+      "end": 669,
+      "note": "issuer; labelled per sample policy"
+    },
+    {
+      "id": "p-008",
+      "pii_type": "COMPANY",
+      "text": "Link Intime India Private Limited",
+      "start": 696,
+      "end": 729,
+      "note": "registrar"
+    },
+    {
+      "id": "p-009",
+      "pii_type": "ADDRESS",
+      "text": "C-101, 247 Park, L.B.S. Marg, Vikhroli West, Mumbai - 400083",
+      "start": 739,
+      "end": 799,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-010",
+      "pii_type": "PHONE",
+      "text": "+91 22 4918 6000",
+      "start": 805,
+      "end": 821,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-011",
+      "pii_type": "EMAIL",
+      "text": "ksh.ipo@linkintime-sample.example",
+      "start": 829,
+      "end": 862,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-012",
+      "pii_type": "FULL_NAME",
+      "text": "Rohan Mehta",
+      "start": 879,
+      "end": 890,
+      "note": "registrar contact"
+    },
+    {
+      "id": "p-013",
+      "pii_type": "COMPANY",
+      "text": "Nuvama Wealth Management Limited",
+      "start": 919,
+      "end": 951,
+      "note": "BRLM"
+    },
+    {
+      "id": "p-014",
+      "pii_type": "EMAIL",
+      "text": "ksh.ipo@nuvama-sample.example",
+      "start": 959,
+      "end": 988,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-015",
+      "pii_type": "PHONE",
+      "text": "+91 22 6636 4900",
+      "start": 1000,
+      "end": 1016,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-016",
+      "pii_type": "FULL_NAME",
+      "text": "Priya Nair",
+      "start": 1033,
+      "end": 1043,
+      "note": "BRLM contact"
+    },
+    {
+      "id": "p-017",
+      "pii_type": "FULL_NAME",
+      "text": "Rajesh Kumar Sharma",
+      "start": 1137,
+      "end": 1156,
+      "note": "director / signatory"
+    },
+    {
+      "id": "p-018",
+      "pii_type": "ADDRESS",
+      "text": "45 Residency Road, Bengaluru - 560025",
+      "start": 1198,
+      "end": 1235,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-019",
+      "pii_type": "FULL_NAME",
+      "text": "Sneha Patel",
+      "start": 1237,
+      "end": 1248,
+      "note": "director / signatory"
+    },
+    {
+      "id": "p-020",
+      "pii_type": "ADDRESS",
+      "text": "8 Banjara Hills, Hyderabad - 500034",
+      "start": 1280,
+      "end": 1315,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-021",
+      "pii_type": "FULL_NAME",
+      "text": "Vikram Singh",
+      "start": 1317,
+      "end": 1329,
+      "note": "director / signatory"
+    },
+    {
+      "id": "p-022",
+      "pii_type": "FULL_NAME",
+      "text": "Meera Iyer",
+      "start": 1469,
+      "end": 1479,
+      "note": "CS / compliance officer"
+    },
+    {
+      "id": "p-023",
+      "pii_type": "EMAIL",
+      "text": "meera.iyer@ksh-sample.example",
+      "start": 1487,
+      "end": 1516,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-024",
+      "pii_type": "PHONE",
+      "text": "+91 80 4123 7788",
+      "start": 1522,
+      "end": 1538,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-025",
+      "pii_type": "COMPANY",
+      "text": "HDFC Bank Limited",
+      "start": 1570,
+      "end": 1587,
+      "note": "banker to the offer"
+    },
+    {
+      "id": "p-026",
+      "pii_type": "EMAIL",
+      "text": "manisha.shukla@hdfc-sample.example",
+      "start": 1595,
+      "end": 1629,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-027",
+      "pii_type": "PHONE",
+      "text": "+91 22 4009 4400",
+      "start": 1641,
+      "end": 1657,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-028",
+      "pii_type": "FULL_NAME",
+      "text": "Manisha Shukla",
+      "start": 1674,
+      "end": 1688,
+      "note": "bank contact"
+    },
+    {
+      "id": "p-029",
+      "pii_type": "COMPANY",
+      "text": "ICICI Bank Limited",
+      "start": 1690,
+      "end": 1708,
+      "note": "banker to the offer"
+    },
+    {
+      "id": "p-030",
+      "pii_type": "EMAIL",
+      "text": "cherag.gyara@icici-sample.example",
+      "start": 1716,
+      "end": 1749,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-031",
+      "pii_type": "FULL_NAME",
+      "text": "Cherag Gyara",
+      "start": 1766,
+      "end": 1778,
+      "note": "bank contact"
+    },
+    {
+      "id": "p-032",
+      "pii_type": "FULL_NAME",
+      "text": "Ananya Krishnan",
+      "start": 2186,
+      "end": 2201,
+      "note": "contact person"
+    },
+    {
+      "id": "p-033",
+      "pii_type": "EMAIL",
+      "text": "ananya.krishnan@ksh-sample.example",
+      "start": 2240,
+      "end": 2274,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-034",
+      "pii_type": "PHONE",
+      "text": "+91 22 4009 4400",
+      "start": 2278,
+      "end": 2294,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-035",
+      "pii_type": "FULL_NAME",
+      "text": "Rohan Mehta",
+      "start": 2319,
+      "end": 2330,
+      "note": "registrar contact"
+    },
+    {
+      "id": "p-036",
+      "pii_type": "EMAIL",
+      "text": "ksh.ipo@linkintime-sample.example",
+      "start": 2334,
+      "end": 2367,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-037",
+      "pii_type": "ADDRESS",
+      "text": "12 MG Road, Bengaluru - 560001",
+      "start": 2395,
+      "end": 2425,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-038",
+      "pii_type": "COMPANY",
+      "text": "Link Intime India Private Limited",
+      "start": 2443,
+      "end": 2476,
+      "note": "registrar"
+    },
+    {
+      "id": "p-039",
+      "pii_type": "FULL_NAME",
+      "text": "Rajesh Kumar Sharma",
+      "start": 2555,
+      "end": 2574,
+      "note": "director / signatory"
+    },
+    {
+      "id": "p-040",
+      "pii_type": "FULL_NAME",
+      "text": "Sneha Patel",
+      "start": 2575,
+      "end": 2586,
+      "note": "director / signatory"
+    },
+    {
+      "id": "p-041",
+      "pii_type": "FULL_NAME",
+      "text": "Vikram Singh",
+      "start": 2587,
+      "end": 2599,
+      "note": "director / signatory"
+    },
+    {
+      "id": "p-042",
+      "pii_type": "COMPANY",
+      "text": "KSH International Limited",
+      "start": 2605,
+      "end": 2630,
+      "note": "issuer; labelled per sample policy"
+    },
+    {
+      "id": "p-043",
+      "pii_type": "FULL_NAME",
+      "text": "Meera Iyer",
+      "start": 2631,
+      "end": 2641,
+      "note": "CS / compliance officer"
+    },
+    {
+      "id": "p-044",
+      "pii_type": "COMPANY",
+      "text": "Acme Components Private Limited",
+      "start": 2745,
+      "end": 2776,
+      "note": "selling shareholder"
+    },
+    {
+      "id": "p-045",
+      "pii_type": "FULL_NAME",
+      "text": "Arjun Desai",
+      "start": 2799,
+      "end": 2810,
+      "note": "selling shareholder signatory"
+    },
+    {
+      "id": "p-046",
+      "pii_type": "EMAIL",
+      "text": "arjun.desai@acme-sample.example",
+      "start": 2818,
+      "end": 2849,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-047",
+      "pii_type": "PHONE",
+      "text": "+91 98765 43210",
+      "start": 2857,
+      "end": 2872,
+      "note": "pages sample"
+    },
+    {
+      "id": "p-048",
+      "pii_type": "ADDRESS",
+      "text": "Plot 19, MIDC, Pune - 411019",
+      "start": 2882,
+      "end": 2910,
+      "note": "pages sample"
+    }
+  ]
+}

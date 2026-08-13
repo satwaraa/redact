@@ -135,3 +135,26 @@ def test_fingerprint_stable() -> None:
     assert a == b
     assert a != c
     assert a.startswith("sha256:")
+
+
+def test_pages_sample_corpus_is_consistent() -> None:
+    """D1 corpus: fingerprint + offsets must stay aligned with extracted_text."""
+    import json
+    from pathlib import Path
+
+    from evaluation.evaluate import assert_truth_consistent, load_ground_truth
+
+    path = Path("evaluation/pages_sample_corpus.json")
+    data = load_ground_truth(path)
+    text = data["extracted_text"]
+    assert_truth_consistent(text, data)
+    sample = data["sample"]
+    assert sample["is_sample"] is True
+    assert sample["pages"] == 6
+    assert text.count("PAGE ") == 6
+    types = {row["pii_type"] for row in data["entities"]}
+    assert types == {"FULL_NAME", "EMAIL", "PHONE", "COMPANY", "ADDRESS"}
+    # Sanity: committed file still matches its own fingerprint field
+    assert data["extraction_fingerprint"] == extraction_fingerprint(text)
+    # Reload via Path to ensure JSON is well-formed on disk
+    assert json.loads(path.read_text(encoding="utf-8"))["entities"]

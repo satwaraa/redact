@@ -454,7 +454,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--corpus",
         type=Path,
         default=Path("evaluation/sample_corpus.json"),
-        help="synthetic corpus with embedded text+labels (default; no real PII)",
+        help=(
+            "labelled corpus with embedded text (default: small synthetic; "
+            "use evaluation/pages_sample_corpus.json for the D1 6-page sample)"
+        ),
     )
     p.add_argument("--input", type=Path, default=None, help="optional .docx to evaluate")
     p.add_argument(

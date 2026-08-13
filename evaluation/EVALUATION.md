@@ -103,3 +103,27 @@ So the recall gap isn't a flaky offset bug — it's just that names and companie
 aren't something the regex detectors try to catch. Turning NER on can pick those
 up, but then you have a model download and whatever label noise spaCy brings.
 I left the snapshot on `--no-ner` so the numbers stay easy to re-check.
+
+## D1 — pages sample (precision-tuning corpus)
+
+`evaluation/pages_sample_corpus.json` is the labelled sample for Workstream B.
+It is a **synthetic 6-page** prospectus-style excerpt covering the types that
+actually appear in `data/prospectus.docx`: `FULL_NAME`, `EMAIL`, `PHONE`,
+`COMPANY`, `ADDRESS`. Types the prospectus lacks (SSN / card / IP / DOB) stay
+on the small `sample_corpus.json` only.
+
+Sampling decisions recorded in the JSON `sample` + `span_conventions` blocks:
+
+- Every occurrence is labelled, including repeats across pages.
+- Labels were written independently of detector output.
+- Issuer name is labelled `COMPANY`; document dates are not `DOB`.
+- Boilerplate (`Equity Shares`, `the Offer`, `Board of Directors`, …) is
+  deliberately left unlabelled so B2/B3 false-positive lists have signal.
+- Real prospectus PII remains gitignored (`data/`, `evaluation/ground_truth.json`).
+
+Re-run:
+
+```bash
+uv run python evaluation/evaluate.py \
+  --corpus evaluation/pages_sample_corpus.json --no-ner --seed 0
+```

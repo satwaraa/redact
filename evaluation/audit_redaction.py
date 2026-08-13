@@ -29,6 +29,7 @@ import json
 import re
 import sys
 import zipfile
+from collections import Counter
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -60,9 +61,12 @@ PROBES: dict[str, re.Pattern[str]] = {
         rf"(?:Contact\s+Person|Compliance\s+Officer|Reported\s+by|Attn|Name)\s*:?\s*({_TITLE})"
     ),
     "honorific_person": re.compile(rf"(?:Mr|Mrs|Ms|Dr|Shri|Smt|Prof)\.?\s+({_TITLE})"),
+    # The trailing guard stops "Inc" matching inside "Income"/"Incentive",
+    # which reported "Gross National Disposable Inc" as a surviving company.
     "legal_entity": re.compile(
         rf"({_TITLE}[ \t]+"
         r"(?:Private[ \t]+Limited|Limited|Ltd\.?|LLP|Inc\.?|GmbH|Pvt\.?[ \t]*Ltd\.?))"
+        r"(?![A-Za-z])"
     ),
 }
 
@@ -88,6 +92,12 @@ SCORE_CATEGORIES: dict[str, str] = {
     "DOMAIN": "Websites",
     "url": "Websites",
 }
+
+# Over-redaction check: a capitalised word this common in prose is vocabulary,
+# not PII, and should still be there afterwards.
+_COMMON_WORD = re.compile(r"(?<![\w.@])[A-Z][a-z]{3,}(?![\w@])")
+_OVER_REDACTION_MIN_COUNT = 12
+_OVER_REDACTION_KEEP_RATIO = 0.25
 
 _LABEL_TOKENS = {
     "website", "telephone", "tel", "email", "e-mail", "fax", "address", "name",
@@ -227,6 +237,26 @@ def audit(source: Path, redacted: Path, *, limit: int = 8) -> dict[str, Any]:
         "pct": round(100 * removed_total / total, 1) if total else None,
     }
 
+    # Over-redaction — frequent capitalised words that largely vanished.
+    # A country, a state or a defined term appears many times in running prose
+    # and should survive redaction. If "India" occurs 97 times in the source and
+    # 0 times in the output, something classified a place name as PII. Recall
+    # probes cannot see this class of error, because nothing leaked.
+    src_counts = Counter(_COMMON_WORD.findall(src_text))
+    red_counts = Counter(_COMMON_WORD.findall(red_text))
+    vanished = []
+    for word, count in src_counts.most_common():
+        if count < _OVER_REDACTION_MIN_COUNT:
+            break
+        kept = red_counts.get(word, 0)
+        if kept <= count * _OVER_REDACTION_KEEP_RATIO:
+            vanished.append({"word": word, "in_source": count, "in_output": kept})
+    report["over_redaction"] = {
+        "checked_words": sum(1 for c in src_counts.values() if c >= _OVER_REDACTION_MIN_COUNT),
+        "vanished": vanished[:limit],
+        "vanished_total": len(vanished),
+    }
+
     # Surrogate quality on whatever the output now contains.
     out_cards = {re.sub(r"\D", "", c) for c in PROBES["card"].findall(red_text)}
     out_cards = {c for c in out_cards if 13 <= len(c) <= 19}
@@ -345,6 +375,25 @@ def render(report: dict[str, Any], *, limit: int = 8) -> str:
         )
         if row["values"]:
             out.append(f"      {_fmt(row['values'], limit)}")
+
+    over = report.get("over_redaction", {})
+    if over.get("vanished"):
+        out.append("")
+        out.append("OVER-REDACTION — common words that mostly disappeared")
+        for row in over["vanished"]:
+            out.append(
+                f"  {row['word']:20} {row['in_source']:4} in source"
+                f" -> {row['in_output']:4} in output"
+            )
+        if over["vanished_total"] > len(over["vanished"]):
+            out.append(f"  … +{over['vanished_total'] - len(over['vanished'])} more")
+        out.append(
+            "  Candidates only: a frequently-named real person belongs here too."
+        )
+        out.append(
+            "  What does not is ordinary vocabulary — a country, a state, a"
+            " defined term."
+        )
 
     if report["surrogate_quality"]:
         out.append("")

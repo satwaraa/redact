@@ -341,11 +341,11 @@ def test_registry_covers_rule_based_types_and_protocol() -> None:
         assert det.name
         seen.add(det.pii_type)
     assert seen >= RULE_BASED_TYPES
-    # FULL_NAME has a rule-based path via ContactPersonDetector — a prospectus
-    # states its individuals in a fixed structural position — but NER remains
-    # its primary detector. COMPANY is still NER-only.
+    # FULL_NAME and COMPANY both have rule-based paths now — a prospectus states
+    # its individuals after a fixed label, and names its companies with a legal
+    # suffix. NER still covers what those rules cannot express.
     assert PIIType.FULL_NAME in seen
-    assert PIIType.COMPANY not in seen
+    assert PIIType.COMPANY in seen
 
 
 def test_validated_detectors_outrank_regex() -> None:
@@ -482,3 +482,56 @@ def test_card_scheme_match_table() -> None:
     assert not card_scheme_match("9999888877776666")  # unknown issuer
     assert not card_scheme_match("37828224631000")  # Amex wrong length
     assert not card_scheme_match("411111111111")  # too short for Visa
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        (
+            "Address: Plot 19, MIDC, Pune - 411019 nearby",
+            "Plot 19, MIDC, Pune - 411019",
+        ),
+        (
+            "Office at 12 MG Road, Bengaluru - 560001 India",
+            "12 MG Road, Bengaluru - 560001",
+        ),
+        (
+            "Unit No. 7, Supa Industrial Park, Ahmednagar 414301 here",
+            "Unit No. 7, Supa Industrial Park, Ahmednagar 414301",
+        ),
+    ],
+)
+def test_address_openers(text: str, expected: str) -> None:
+    ents = _detector_for(PIIType.ADDRESS).detect(text, _cfg())
+    assert ents, f"no address found in {text!r}"
+    assert expected in ents[0].text
+    assert text[ents[0].start : ents[0].end] == ents[0].text
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        (
+            "incorporated as Bhandary Metal Extrusion Private Limited under",
+            "Bhandary Metal Extrusion Private Limited",
+        ),
+        ("lender Bajaj Finance Limited agreed", "Bajaj Finance Limited"),
+        ("auditor Kirtane Pandit LLP signed", "Kirtane Pandit LLP"),
+        ("peer Precision Wires India Limited reported", "Precision Wires India Limited"),
+    ],
+)
+def test_legal_entity_positives(text: str, expected: str) -> None:
+    _assert_hit(text, PIIType.COMPANY, expected)
+
+
+@pytest.mark.parametrize(
+    "text,reason",
+    [
+        ("Gross National Disposable Income rose", "Income is not the Inc suffix"),
+        ("the Production Linked Incentive scheme", "Incentive is not Inc"),
+        ("a private limited entity", "no name in front of the suffix"),
+    ],
+)
+def test_legal_entity_negatives(text: str, reason: str) -> None:
+    _ = reason
+    _assert_miss(text, PIIType.COMPANY)

@@ -55,14 +55,12 @@ def expand_occurrences(
     treats any surviving original as a hard failure, so once a value is known
     PII, each non-overlapping occurrence must be scheduled for replacement.
 
-    Matching is whitespace-flexible: a name written "Kushal Subbayya Hegde" in
-    prose appears as "Kushal\\tSubbayya Hegde" in a table cell, and an exact
-    search would leave the tabbed copy in the output. The surrogate map
-    normalises whitespace, so both forms receive the same fake value.
+    Matching is whitespace-flexible: prose writes "Kushal Subbayya Hegde" where
+    a table cell writes "Kushal\\tSubbayya Hegde", and an exact search would
+    leave the tabbed copy behind.
 
-    Call this *after* dropping cross-block spans: a longer multi-block hit must
-    not claim a position and then be discarded, leaving a shorter in-block
-    repeat unreplaced.
+    Call this *after* dropping cross-block spans, so a multi-block hit cannot
+    claim a position and then vanish, leaving an in-block repeat unreplaced.
     """
     if not entities:
         return []

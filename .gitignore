@@ -8,19 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
-
-# The source document holds real PII; the repository is itself a deliverable.
-# Reviewers already have the attachment — the README says where to put it.
 data/
-
-# Redacted output contains fake values only and is deliverable #2, so the
-# prospectus artefact ships while scratch runs stay out.
-out/*
-!out/prospectus.redacted.docx
+out/
+!data/prospectus.docx
 
 evaluation/ground_truth.json
 evaluation/report.*
 *.report.json
-
-# Working notes, not part of the submission.
-PLAN.md

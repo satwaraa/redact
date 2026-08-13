@@ -89,15 +89,22 @@ class Detector(Protocol):
     def detect(self, text: str, config: RedactorConfig) -> list[PIIEntity]: ...
 
 
+# Words that cannot, on their own, be a company name in front of a legal suffix.
+_GENERIC_ENTITY_WORDS: frozenset[str] = frozenset(
+    {
+        "the", "and", "of", "our", "a", "an", "company", "companies", "private",
+        "public", "limited", "ltd", "group", "holding", "holdings", "its",
+    }
+)
+
 _RUN_SEPARATORS = " \t-"
 
 
 def _digit_run(text: str, start: int, end: int) -> str:
-    """The maximal digit-and-separator run containing ``text[start:end]``.
+    """Maximal digit-and-separator run around a span.
 
-    Grows outward across a separator only while it sits between digits, so
-    "3813-3266-4295" inside "4929-3813-3266-4295" reports all 16 digits, while
-    two numbers split by ", " or a tab remain separate runs.
+    Grows across a separator only between digits, so "3813-3266-4295" inside
+    "4929-3813-3266-4295" reports all 16 while a tab-split pair stays separate.
     """
     left = start
     while left > 0:
@@ -161,11 +168,9 @@ def luhn_valid(digits: str) -> bool:
 def card_scheme_match(digits: str) -> bool:
     """True when prefix AND length match a real card scheme.
 
-    Luhn alone is too strict for redaction: a document full of card-shaped
-    numbers that fail the checksum — test data, transcription errors, partially
-    masked records — is still full of card-shaped PII. Requiring the issuer
-    prefix and that scheme's exact length keeps this far narrower than "any long
-    number", so ordinary account and reference numbers are unaffected.
+    Luhn alone is too strict: card-shaped numbers that fail the checksum (test
+    data, typos, masked records) are still card-shaped PII. Requiring the issuer
+    prefix and its exact length keeps this well short of "any long number".
     """
     n = len(digits)
     if not digits.isdigit():
@@ -407,12 +412,10 @@ class PhoneDetector(RegexDetector):
         digits = _NON_DIGIT.sub("", value)
         if not (7 <= len(digits) <= 15):
             return False
-        # A phone number is a whole token, never a fragment of a longer numeric
-        # string. Without this, "4929-3813-3266-4295" yields a 12-digit phone
-        # match starting after a hyphen: the card is then replaced with
-        # phone-shaped digits, losing its brand prefix and Luhn validity.
-        # E.164 caps a real number at 15 digits, so a longer run is an account,
-        # card or reference number whatever its internal separators.
+        # A phone is a whole token, not a slice of a longer number: without
+        # this, "4929-3813-3266-4295" yields a 12-digit phone match after a
+        # hyphen and the card is replaced with phone-shaped digits. E.164 caps
+        # a real number at 15 digits.
         if len(_NON_DIGIT.sub("", _digit_run(text, start, end))) > 15:
             return False
         return not bool(_YEARISH.fullmatch(digits))
@@ -507,14 +510,25 @@ class AddressDetector(RegexDetector):
     name = "address"
     pii_type = PIIType.ADDRESS
     priority = PRIORITY_REGEX
+    # Two openers, both ending in a PIN: "12 MG Road, Bengaluru - 560001"
+    # (number then street type) and "Plot 19, MIDC, Pune - 411019" (address
+    # keyword then number) — Indian addresses often carry no street type.
     pattern = re.compile(
         r"(?P<value>"
-        r"\d{1,5}\s+"
-        r"[^\n]{3,80}?"
-        r"(?:Road|Rd\.?|Street|St\.?|Lane|Ln\.?|Marg|Nagar|Sector|Block|"
-        r"Avenue|Ave\.?|Boulevard|Blvd\.?|Floor|Apt\.?|Apartment|"
-        r"P\.?\s*O\.?\s*Box)"
-        r"[^\n]{0,40}?"
+        r"(?:"
+        r"\d{1,5}\s+[^\n]{3,80}?"
+        # Locality words count too: "8 Banjara Hills, Hyderabad - 500034" has
+        # no street type. The trailing guard matters — an unbounded "St" matches
+        # inside "system".
+        r"\b(?:Road|Rd|Street|St|Lane|Ln|Marg|Nagar|Sector|Block|"
+        r"Avenue|Ave|Boulevard|Blvd|Floor|Apt|Apartment|"
+        r"Hills|Vihar|Puram|Layout|Enclave|Extension|Phase|Society|"
+        r"Complex|Towers?|Chambers|Bhavan|Estate|Gardens?|Colony|Chowk|"
+        r"Industrial\s+(?:Park|Area|Estate)|P\.?\s*O\.?\s*Box)\.?(?![A-Za-z])"
+        r"|\b(?:Plot|Flat|House|Shop|Unit|Gat|Survey|Khasra|Door)\b"
+        r"[ \t]*(?:No\.?)?[ \t]*\d{1,5}"
+        r")"
+        r"[^\n]{0,60}?"
         r"\d{5,6}"
         r")",
         re.IGNORECASE,
@@ -550,13 +564,10 @@ _NOT_STOP = (
 
 
 class ContactPersonDetector(RegexDetector):
-    """Names introduced by an explicit label, e.g. "Contact Person: Kishan Rastogi".
+    """Names introduced by a label, e.g. "Contact Person: Kishan Rastogi".
 
-    A prospectus states its real individuals in a fixed structural position, so
-    they can be found by rule rather than by model. Measured on the deliverable:
-    of 15 distinct "Contact Person" names, spaCy alone missed 7.
-
-    Higher priority than NER so a labelled name wins the span outright.
+    A prospectus states its individuals in a fixed structural position, so a
+    rule beats the model here: spaCy alone missed 7 of 15 on the deliverable.
     """
 
     name = "contact_person"
@@ -614,10 +625,42 @@ class DomainDetector(RegexDetector):
         return "@" not in text[max(0, match.start("value") - 1) : match.start("value")]
 
 
+class LegalEntityDetector(RegexDetector):
+    """Companies named with a legal suffix, e.g. "Bhandary Metal Pvt Ltd".
+
+    spaCy produced no span at all for "Bajaj Finance Limited" or "Precision
+    Wires India Limited". A legal suffix is unambiguous, so a rule wins here.
+    """
+
+    name = "legal_entity"
+    pii_type = PIIType.COMPANY
+    priority = PRIORITY_REGEX
+    pattern = re.compile(
+        r"(?<![\w&])(?P<value>"
+        r"(?:[A-Z][\w&.\-]*[ \t]+){1,5}"
+        r"(?:Private[ \t]+Limited|Pvt\.?[ \t]*Ltd\.?|Limited|Ltd\.?|LLP|Inc)"
+        # No trailing dot allowed on Inc: the document says "Disposable Income",
+        # and an unbounded Inc would turn that phrase into a company.
+        r")(?!\w)"
+    )
+
+    def validate(self, match: re.Match[str], text: str, config: RedactorConfig) -> bool:
+        value = match.group("value")
+        if "\n" in value:
+            return False
+        words = [w.casefold().strip(".,") for w in re.split(r"[\s\xa0]+", value) if w]
+        # Drop the suffix itself, then require a real name in front of it.
+        core = [w for w in words[:-1] if w]
+        if not core:
+            return False
+        return not all(w in _GENERIC_ENTITY_WORDS for w in core)
+
+
 # Register instances (order here is documentation; get_detectors sorts by priority).
 register(EmailDetector())
 register(ContactPersonDetector())
 register(DomainDetector())
+register(LegalEntityDetector())
 register(PhoneDetector())
 register(AddressDetector())
 register(SSNDetector())

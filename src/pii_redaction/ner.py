@@ -67,6 +67,19 @@ NER_ORG_STOPWORDS: frozenset[str] = frozenset(
         "fresh issue",
         "offer for sale",
         "objects of the offer",
+        # Prospectus defined terms the model reads as organisations.
+        "asba",
+        "asba form",
+        "scsb",
+        "syndicate",
+        "syndicate member",
+        "registered broker",
+        "designated intermediary",
+        "escrow collection bank",
+        "refund bank",
+        "public offer account",
+        "upi",
+        "upi mandate request",
     }
 )
 
@@ -157,6 +170,20 @@ _LEGAL_SUFFIX = re.compile(
     r")\b"
 )
 
+# Address evidence: a PIN/ZIP, or a street-type word anywhere in the block.
+_POSTCODE = re.compile(r"(?<!\d)\d{5,6}(?!\d)")
+_STREET_CUES = re.compile(
+    r"(?i)\b(?:road|rd|street|st|lane|ln|marg|nagar|sector|block|plot|floor|"
+    r"apartment|apt|avenue|ave|boulevard|blvd|chowk|colony|cross|galli|"
+    r"industrial\s+(?:park|area|estate)|p\.?\s*o\.?\s*box|no\.)\b"
+)
+
+# "<name tokens> Limited/Ltd/LLP/Inc" — the document naming its own companies.
+_SUFFIXED_ORG = re.compile(
+    r"((?:[A-Z][\w&.\-]*(?:[ \t]+|$)){1,6}?)"
+    r"(?:Pvt\.?[ \t]*Ltd\.?|Private[ \t]+Limited|Limited|Ltd\.?|LLP|Inc\.?)\b"
+)
+
 _CONTACT_BLOCK_CUES = re.compile(
     r"(?i)\b(?:"
     r"e-?mail|telephone|tel\.?|phone|fax|website|address|"
@@ -164,20 +191,10 @@ _CONTACT_BLOCK_CUES = re.compile(
     r")\b"
 )
 
-# Lexical precision guards, in place of a document-frequency threshold.
-#
-# Frequency was measured and rejected: in an IPO prospectus the promoter family
-# is named on nearly every page, so the most sensitive names are also the most
-# frequent strings. On a hand-labelled sample of 120 NER detections, document
-# frequency scored AUC 0.588 as a false-positive signal (0.50 = no signal), and
-# a threshold of 15 discarded every promoter name in this document while still
-# leaving 65% of survivors mis-tagged.
-#
-# These two rules were measured on the same sample and do separate:
-#   determiner prefix     kills 22 false positives, 0 true positives
-#   all-tokens-common     kills 43 false positives, 2 true positives
-# Combined: recall 94.1%, precision 49.2% (baseline 28.3%), rejecting 43.3% of
-# NER detections document-wide and 0 of 111 gold person-name detections.
+# Lexical guards, chosen over a document-frequency threshold: frequency scored
+# AUC 0.588 as a false-positive signal and discarded every promoter name, since
+# in a prospectus the most-repeated names are the most sensitive ones. These two
+# rules killed 65 false positives for 2 true ones on a 120-span labelled sample.
 _DETERMINERS: frozenset[str] = frozenset(
     {"the", "our", "such", "each", "any", "this"}
 )
@@ -193,9 +210,8 @@ _LEXICAL_FILTER_TYPES: frozenset[PIIType] = frozenset(
 _ALPHA_TOKEN = re.compile(r"[A-Za-z][A-Za-z'’\-]*")
 _LOWER_TOKEN = re.compile(r"(?<![A-Za-z'’\-])[a-z][a-z'’\-]+")
 
-# Email local parts, domains and URLs are lowercase by convention and are not
-# prose. Counting them would make "ananya.krishnan@example.com" evidence that
-# "ananya" is ordinary vocabulary, when it is evidence of the opposite.
+# Not prose: counting these would make "ananya.krishnan@example.com" evidence
+# that "ananya" is common vocabulary, when it is evidence of the opposite.
 _NON_PROSE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+|https?://\S+|www\.\S+")
 
 # Module-level cache: model name → loaded spaCy Language. Never eager-load.
@@ -206,9 +222,8 @@ NER_PII_TYPES: frozenset[PIIType] = frozenset(
 )
 
 
-# Unicode spaces Word emits inside table cells and between name parts. Each is
-# a single character, so translating them preserves every offset exactly — the
-# model sees ordinary spaces while entity text still comes from the original.
+# Word writes table-cell names with exotic spaces. Each is a single character,
+# so translating them preserves every offset exactly.
 _SPACE_TRANSLATION = str.maketrans(
     {
         " ": " ",  # no-break space — "Robert Aragon" in Word tables
@@ -251,9 +266,9 @@ def _is_org_stopword(span: str) -> bool:
     if norm in NER_ORG_STOPWORDS:
         return True
     for stop in NER_ORG_STOPWORDS:
-        if stop in norm and re.search(
-            rf"(?<!\w){re.escape(stop)}(?!\w)", norm, flags=re.UNICODE
-        ):
+        # Tolerate a plural: the lexicon lists "bidder", the document writes
+        # "ASBA Bidders", and without this the phrase is redacted as a company.
+        if re.search(rf"(?<!\w){re.escape(stop)}s?(?!\w)", norm, flags=re.UNICODE):
             return True
     return False
 
@@ -276,7 +291,12 @@ def _is_heading_block(block: str) -> bool:
         return False
     if all(c.isupper() for c in letters):
         return True
-    # Short standalone title that is entirely stopword lexicon after normalise.
+    # Short standalone title drawn from the stopword lexicon. Sentence-final
+    # punctuation rules it out: "Nuvama confirmed the allotment." is prose that
+    # happens to contain a lexicon word, and discarding the whole block would
+    # drop any real name sitting in it.
+    if stripped.endswith((".", "?", "!")):
+        return False
     words = stripped.split()
     return len(words) <= 6 and len(stripped) <= 60 and _is_org_stopword(stripped)
 
@@ -391,6 +411,38 @@ def _org_positive(text: str, span: str, start: int) -> bool:
     return _in_contact_block(text, start)
 
 
+def _address_shaped(text: str, span: str, start: int) -> bool:
+    """True when a GPE/LOC span carries a street number or PIN of its own.
+
+    A bare place name is never enough. AddressDetector already claims the full
+    address, and occurrence expansion propagates anything accepted — so allowing
+    "India" once inside an address rewrote all 150 occurrences of the word.
+    """
+    return any(ch.isdigit() for ch in span)
+
+
+def build_suffixed_org_tokens(text: str) -> frozenset[str]:
+    """Tokens the document itself pairs with a legal suffix somewhere.
+
+    "Nuvama" passes as a lone ORG because "Nuvama Wealth Management Limited"
+    appears; "Maharashtra" and "ASBA" do not.
+    """
+    tokens: set[str] = set()
+    for match in _SUFFIXED_ORG.finditer(text):
+        for token in re.findall(r"[^\W\d_]{3,}", match.group(1), re.UNICODE):
+            tokens.add(token.casefold())
+    return frozenset(tokens)
+
+
+def _company_shaped(span: str, suffixed_tokens: frozenset[str]) -> bool:
+    """Multi-token orgs pass; a lone token must be named as a company elsewhere."""
+    words = [w for w in re.split(r"[\s\xa0]+", span.strip()) if w]
+    if len(words) > 1:
+        return True
+    bare = re.sub(r"[^\w]", "", words[0]).casefold() if words else ""
+    return bool(bare) and bare in suffixed_tokens
+
+
 def _person_rule_agree(span: str) -> bool:
     """B8 structural heuristic for PERSON: looks like a multi-token name."""
     return _title_case_token_count(span) >= 2
@@ -426,6 +478,37 @@ def _load_nlp(model_name: str) -> Any:
 def clear_nlp_cache() -> None:
     """Drop cached models (tests only)."""
     _NLP_CACHE.clear()
+
+
+_PERSON_SEPARATOR = re.compile(r"\s*[/;]\s*|\s+&\s+")
+
+
+def split_person_span(text: str, start: int, end: int) -> list[tuple[int, int]]:
+    """Split "Kishan Rastogi/Abhijit Diwan" into one span per person.
+
+    Kept whole, the pair only matches where it is written identically — the
+    prospectus writes it both with and without a space after the slash, so one
+    real name survived. Split, each person matches wherever they appear.
+    """
+    if start < 0 or end < start or end > len(text):
+        return []
+    span = text[start:end]
+    if not _PERSON_SEPARATOR.search(span):
+        return [(start, end)] if span.strip() else []
+
+    pieces: list[tuple[int, int]] = []
+    cursor = 0
+    for part in _PERSON_SEPARATOR.split(span):
+        idx = span.find(part, cursor)
+        if idx < 0 or not part.strip():
+            cursor += len(part)
+            continue
+        lead = len(part) - len(part.lstrip())
+        stripped = part.strip()
+        piece_start = start + idx + lead
+        pieces.append((piece_start, piece_start + len(stripped)))
+        cursor = idx + len(part)
+    return pieces
 
 
 def clip_at_newlines(text: str, start: int, end: int) -> list[tuple[int, int]]:
@@ -530,6 +613,7 @@ class NERDetector:
         *,
         vocabulary: frozenset[str],
         gazetteer: frozenset[str],
+        suffixed_tokens: frozenset[str],
         require_agreement: bool,
     ) -> bool:
         if len(piece) < 2:
@@ -553,6 +637,11 @@ class NERDetector:
         ):
             return False
         if pii_type is PIIType.COMPANY and not _org_positive(text, piece, piece_start):
+            return False
+        if pii_type is PIIType.COMPANY and not _company_shaped(piece, suffixed_tokens):
+            return False
+        # A place name is PII inside an address, not on its own.
+        if pii_type is PIIType.ADDRESS and not _address_shaped(text, piece, piece_start):
             return False
         # B8: model already proposed the span; also require the structural rule.
         if require_agreement:
@@ -581,6 +670,7 @@ class NERDetector:
         normalised = normalise_spaces(text)
         gazetteer = build_person_gazetteer(normalised)
         vocabulary = build_lowercase_vocabulary(normalised)
+        suffixed_tokens = build_suffixed_org_tokens(normalised)
 
         for base, chunk in iter_text_chunks(normalised, self.max_chunk_chars):
             doc = nlp(chunk)
@@ -610,7 +700,14 @@ class NERDetector:
                     continue
                 span_text = text[abs_start:abs_end]
 
-                for piece_start, piece_end in clip_at_newlines(text, abs_start, abs_end):
+                spans = clip_at_newlines(text, abs_start, abs_end)
+                if pii_type is PIIType.FULL_NAME:
+                    spans = [
+                        part
+                        for s, e in spans
+                        for part in split_person_span(text, s, e)
+                    ]
+                for piece_start, piece_end in spans:
                     piece = text[piece_start:piece_end]
                     if not self._accept_piece(
                         text,
@@ -619,6 +716,7 @@ class NERDetector:
                         piece_start,
                         vocabulary=vocabulary,
                         gazetteer=gazetteer,
+                        suffixed_tokens=suffixed_tokens,
                         require_agreement=require_agreement,
                     ):
                         continue

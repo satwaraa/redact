@@ -384,11 +384,9 @@ class SurrogateFactory:
     def _contains_real_name_token(self, candidate: str) -> bool:
         """True when a surrogate embeds a real person-name token.
 
-        Faker's en_IN company generator produces names like "Yohannan, Hegde and
-        Patla". If "Hegde" is a real promoter's surname, that fake company puts
-        a real surname back into the redacted document — harmless to
-        re-identification, but it defeats leak verification and misleads a
-        reader. Equality checks miss it; this checks containment.
+        Faker's en_IN company pool emits names like "Yohannan, Hegde and Patla".
+        If "Hegde" is a real surname, that fake company puts it back into the
+        document. Equality checks miss this; containment catches it.
         """
         if not self._real_name_tokens:
             return False
@@ -409,9 +407,8 @@ class SurrogateFactory:
     def _replace_real_name_tokens(self, value: str) -> str:
         """Swap out any real name token a generator happened to emit.
 
-        Repair rather than reject: Faker's en_IN company pool draws on the same
-        surname list as its person names, so on a document with hundreds of real
-        names almost every candidate collides and a retry loop simply exhausts.
+        Repair, not reject: the company and person pools share a surname list,
+        so with hundreds of real names a retry loop just exhausts.
         """
         if not self._real_name_tokens:
             return value

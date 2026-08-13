@@ -23,10 +23,12 @@ from pii_redaction.ner import (
     _is_org_stopword,
     _starts_with_determiner,
     build_lowercase_vocabulary,
+    build_suffixed_org_tokens,
     clear_nlp_cache,
     clip_at_newlines,
     iter_text_chunks,
     normalise_spaces,
+    split_person_span,
 )
 
 
@@ -546,3 +548,109 @@ def test_nbsp_separated_name_is_detected(monkeypatch: pytest.MonkeyPatch) -> Non
     # The entity carries the ORIGINAL slice, so the D2 invariant holds.
     assert entity.text == "Robert\xa0Aragon"
     assert text[entity.start : entity.end] == entity.text
+
+
+def test_bare_place_name_is_not_an_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GPE maps to ADDRESS, but a country in prose is not somebody's address."""
+    text = "We are the third largest manufacturer of winding wires in India today"
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc([_FakeSpan("India", chunk.index("India"), "GPE")])
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    assert NERDetector().detect(text, _cfg()) == []
+
+
+def test_bare_place_name_rejected_even_inside_an_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AddressDetector owns the full address; a bare GPE only adds risk.
+
+    Occurrence expansion propagates any accepted value document-wide, so
+    accepting "Bengaluru" once inside an address would rewrite the word
+    everywhere it appears in prose.
+    """
+    text = "Registered Office: 12 MG Road, Bengaluru - 560001"
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc([_FakeSpan("Bengaluru", chunk.index("Bengaluru"), "GPE")])
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    assert NERDetector().detect(text, _cfg()) == []
+
+
+def test_ner_address_with_a_street_number_is_kept(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text = "Corporate Office: 8 Banjara Hills, Hyderabad - 500034"
+    span = "8 Banjara Hills, Hyderabad - 500034"
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc([_FakeSpan(span, chunk.index(span), "FAC")])
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    assert [e.text for e in NERDetector().detect(text, _cfg())] == [span]
+
+
+def test_single_word_org_needs_a_suffixed_mention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lone token is a company only if the document names it as one."""
+    text = (
+        "Book Running Lead Manager: Nuvama Wealth Management Limited\n"
+        "Registrar of Companies, Maharashtra at Pune\n"
+        "Telephone: +91 22 6636 4900\n"
+        "Nuvama confirmed the allotment.\n"
+    )
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc(
+            [
+                _FakeSpan("Maharashtra", chunk.index("Maharashtra"), "ORG"),
+                _FakeSpan("Nuvama", chunk.rindex("Nuvama"), "ORG"),
+            ]
+        )
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    found = {e.text for e in NERDetector().detect(text, _cfg())}
+    assert "Nuvama" in found
+    assert "Maharashtra" not in found
+
+
+def test_build_suffixed_org_tokens() -> None:
+    tokens = build_suffixed_org_tokens(
+        "Nuvama Wealth Management Limited and Acme Components Private Limited"
+    )
+    assert "nuvama" in tokens
+    assert "acme" in tokens
+    assert "maharashtra" not in tokens
+
+
+def test_split_person_span_separates_two_people() -> None:
+    text = "Kishan Rastogi/ Abhijit Diwan"
+    pieces = split_person_span(text, 0, len(text))
+    assert [text[s:e] for s, e in pieces] == ["Kishan Rastogi", "Abhijit Diwan"]
+    # A single name is returned untouched.
+    solo = "Ada Lovelace"
+    assert [solo[s:e] for s, e in split_person_span(solo, 0, len(solo))] == [solo]
+
+
+def test_paired_names_are_detected_individually(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both spellings of the pair must be covered, wherever each name appears."""
+    pair = "Kishan Rastogi/Abhijit Diwan"
+    text = (
+        f"Contact Person: {pair}\n"
+        "Telephone: +91 22 4009 4400\n"
+        "Kishan Rastogi/ Abhijit Diwan\n"
+    )
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        return _FakeDoc([_FakeSpan(pair, chunk.index(pair), "PERSON")])
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    found = {e.text for e in NERDetector().detect(text, _cfg())}
+    assert "Kishan Rastogi" in found
+    assert "Abhijit Diwan" in found
+    assert pair not in found

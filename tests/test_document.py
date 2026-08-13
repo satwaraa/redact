@@ -496,6 +496,79 @@ def test_header_part_instr_text_extracted(tmp_path: Path) -> None:
     assert email in doc.extract_text()
 
 
+def test_blank_metadata_clears_core_and_app(tmp_path: Path) -> None:
+    path = tmp_path / "meta.docx"
+
+    def build(d: Document) -> None:
+        d.add_paragraph("no pii here")
+        d.core_properties.author = "Alice Author"
+        d.core_properties.last_modified_by = "Bob Editor"
+
+    _write_docx(path, build)
+    _set_app_identity(path, company="Secret Co", manager="Eve Manager")
+
+    doc = DocxDocument(path)
+    doc.apply([])
+    out = tmp_path / "meta-out.docx"
+    doc.save(out)
+
+    corpus = package_corpus(out)
+    assert "Alice Author" not in corpus
+    assert "Bob Editor" not in corpus
+    assert "Secret Co" not in corpus
+    assert "Eve Manager" not in corpus
+
+
+def test_rewrite_mailto_and_http_relationship_targets(tmp_path: Path) -> None:
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+
+    path = tmp_path / "rels.docx"
+    email = "secret@mail.com"
+    url = "https://example.com/users/secret@mail.com"
+
+    def build(d: Document) -> None:
+        d.add_paragraph(f"contact {email}")
+        d.part.relate_to(f"mailto:{email}", RT.HYPERLINK, is_external=True)
+        d.part.relate_to(url, RT.HYPERLINK, is_external=True)
+
+    _write_docx(path, build)
+    doc = DocxDocument(path)
+    text = doc.extract_text()
+    start = text.index(email)
+    fake = "safe@ex.com"
+    doc.apply([_entity(email, start, replacement=fake)])
+    out = tmp_path / "rels-out.docx"
+    doc.save(out)
+
+    corpus = package_corpus(out)
+    assert email not in corpus
+    assert f"mailto:{fake}" in corpus
+    assert f"https://example.com/users/{fake}" in corpus
+
+
+def _set_app_identity(path: Path, *, company: str, manager: str) -> None:
+    import zipfile
+    from xml.etree import ElementTree as ET
+
+    ns = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+    with zipfile.ZipFile(path, "r") as zf:
+        app_xml = zf.read("docProps/app.xml")
+        other = {n: zf.read(n) for n in zf.namelist() if n != "docProps/app.xml"}
+    root = ET.fromstring(app_xml)
+    for tag, value in (("Company", company), ("Manager", manager)):
+        el = root.find(f"{{{ns}}}{tag}")
+        if el is None:
+            el = ET.SubElement(root, f"{{{ns}}}{tag}")
+        el.text = value
+    patched = ET.tostring(root, encoding="utf-8", xml_declaration=True)
+    tmp = path.with_suffix(".tmp.docx")
+    with zipfile.ZipFile(tmp, "w") as zf:
+        zf.writestr("docProps/app.xml", patched)
+        for name, data in other.items():
+            zf.writestr(name, data)
+    tmp.replace(path)
+
+
 def _inject_instr_mailto(
     path: Path, email: str, *, part_name: str = "word/document.xml"
 ) -> None:

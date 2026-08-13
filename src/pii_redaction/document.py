@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import bisect
+import logging
 import re
 import zipfile
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Protocol, runtime_checkable
+from xml.etree import ElementTree as ET
 
 from docx import Document as _open_docx
 from docx.document import Document as _Document
@@ -17,7 +19,12 @@ from docx.text.run import Run
 
 from pii_redaction.models import DocumentError, PIIEntity, assert_consistent
 
+logger = logging.getLogger(__name__)
+
 _STORY_PART_RE = re.compile(r"/word/(document|header\d+|footer\d+)\.xml$")
+_APP_PROPS_NS = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+_MAILTO_RE = re.compile(r"(?i)^mailto:")
+_HTTP_RE = re.compile(r"(?i)^https?://")
 
 
 def iter_package_texts(path: Path | str) -> Iterator[tuple[str, str]]:
@@ -225,8 +232,66 @@ class DocxDocument:
                 spans, key=lambda s: s[0], reverse=True
             ):
                 block.replace_span(local_start, local_end, replacement)
+        self.blank_metadata()
+        self.rewrite_relationship_targets(entities)
         self._cached_text = None
         self._block_spans = []
+
+    def blank_metadata(self) -> None:
+        """A4: unconditionally clear identity fields in core.xml / app.xml."""
+        props = self._doc.core_properties
+        props.author = ""
+        props.last_modified_by = ""
+
+        app = _find_part(self._doc, "/docProps/app.xml")
+        if app is None:
+            return
+        try:
+            root = ET.fromstring(app.blob)
+        except ET.ParseError:
+            logger.debug("skipping app.xml metadata sweep: unreadable XML")
+            return
+        for tag in ("Company", "Manager"):
+            el = root.find(f"{{{_APP_PROPS_NS}}}{tag}")
+            if el is None:
+                el = ET.SubElement(root, f"{{{_APP_PROPS_NS}}}{tag}")
+            el.text = ""
+        app._blob = ET.tostring(  # noqa: SLF001
+            root, encoding="utf-8", xml_declaration=True
+        )
+
+    def rewrite_relationship_targets(self, entities: Sequence[PIIEntity]) -> None:
+        """A5: rewrite mailto: / URL relationship targets using the redaction map."""
+        replacements = [
+            (entity.text, entity.replacement)
+            for entity in entities
+            if entity.replacement and entity.text and entity.replacement != entity.text
+        ]
+        if not replacements:
+            return
+        # Longer originals first so nested strings replace cleanly.
+        replacements.sort(key=lambda pair: len(pair[0]), reverse=True)
+
+        rewritten = 0
+        for part in self._doc.part.package.parts:
+            rels = getattr(part, "rels", None)
+            if rels is None:
+                continue
+            for rel in rels.values():
+                if not getattr(rel, "is_external", False):
+                    continue
+                target = rel.target_ref
+                if not (_MAILTO_RE.match(target) or _HTTP_RE.match(target)):
+                    continue
+                new_target = target
+                for original, replacement in replacements:
+                    if original in new_target:
+                        new_target = new_target.replace(original, replacement)
+                if new_target != target:
+                    rel._target = new_target  # noqa: SLF001
+                    rewritten += 1
+        if rewritten:
+            logger.info("rewrote relationship targets count=%d", rewritten)
 
     def rendered_text(self) -> str:
         return "\n".join(block.text for block in self._blocks)
@@ -242,6 +307,13 @@ class DocxDocument:
             raise
         except Exception as exc:  # noqa: BLE001
             raise DocumentError(f"cannot save docx: {out}") from exc
+
+
+def _find_part(doc: _Document, partname: str) -> object | None:
+    for part in doc.part.package.parts:
+        if str(part.partname) == partname:
+            return part
+    return None
 
 
 def _assert_non_overlapping(entities: Sequence[PIIEntity]) -> None:

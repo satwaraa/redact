@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from docx import Document
 
-from pii_redaction.document import DocxDocument
+from pii_redaction.document import DocxDocument, package_corpus
 from pii_redaction.models import (
     PRIORITY_REGEX,
     LeakDetectedError,
@@ -330,16 +330,16 @@ def test_verify_package_no_leaks_scans_raw_parts(tmp_path: Path) -> None:
     assert "EMAIL" in str(exc_info.value)
 
 
-def test_recall_probe_catches_field_code_email(tmp_path: Path) -> None:
-    """C2: email only in instrText survives body redaction and must fail verify."""
+def test_field_code_email_is_redacted_from_package(tmp_path: Path) -> None:
+    """A1: mailto inside instrText is detectable and removed from the package."""
     email = "manisha.shukla@hdfcbank.com"
     src = _write_simple_docx(tmp_path / "in.docx", "visible a@b.co only")
     _inject_instr_mailto(src, email)
     dst = tmp_path / "out.docx"
-    with pytest.raises(LeakDetectedError) as exc_info:
-        Redactor(_cfg()).redact_document(src, dst)
-    assert "EMAIL" in str(exc_info.value)
-    assert not dst.exists()
+    result = Redactor(_cfg()).redact_document(src, dst)
+    assert dst.exists()
+    assert email not in package_corpus(dst)
+    assert any(e.pii_type is PIIType.EMAIL for e in result.entities)
 
 
 def _inject_instr_mailto(path: Path, email: str) -> None:

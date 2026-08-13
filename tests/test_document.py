@@ -9,9 +9,14 @@ from pathlib import Path
 import pytest
 from docx import Document
 from docx.shared import Pt
-from docx.text.paragraph import Paragraph
 
-from pii_redaction.document import DocxDocument, iter_package_texts, package_corpus
+from pii_redaction.document import (
+    DocxDocument,
+    InstrTextBlock,
+    ParagraphBlock,
+    iter_package_texts,
+    package_corpus,
+)
 from pii_redaction.models import PRIORITY_REGEX, DocumentError, PIIEntity, PIIType
 
 
@@ -217,6 +222,7 @@ class TestRunSplicing:
         bold_ok = [
             r
             for b in reloaded.blocks
+            if isinstance(b, ParagraphBlock)
             for r in b.runs
             if r.text == " OK"
         ]
@@ -391,7 +397,13 @@ class TestRoundTrip:
         reloaded = DocxDocument(out)
         assert "fake@ex.com" in reloaded.extract_text()
         assert email not in reloaded.extract_text()
-        italics = [r for b in reloaded.blocks for r in b.runs if r.text == "visible "]
+        italics = [
+            r
+            for b in reloaded.blocks
+            if isinstance(b, ParagraphBlock)
+            for r in b.runs
+            if r.text == "visible "
+        ]
         assert italics and italics[0].italic is True
 
     def test_rendered_text_differs_from_pre_apply_extract(self, tmp_path: Path) -> None:
@@ -421,13 +433,14 @@ class TestDocumentedLimitations:
         # Each block is separate; no single block contains the full address
         assert not any("user@mail.com" in b.text for b in doc.blocks)
 
-    def test_blocks_are_paragraphs(self, tmp_path: Path) -> None:
+    def test_blocks_are_paragraph_or_instr(self, tmp_path: Path) -> None:
         path = _write_docx(
             tmp_path / "types.docx",
             lambda d: d.add_paragraph("only"),
         )
         doc = DocxDocument(path)
-        assert all(isinstance(b, Paragraph) for b in doc.blocks)
+        assert all(isinstance(b, (ParagraphBlock, InstrTextBlock)) for b in doc.blocks)
+        assert any(isinstance(b, ParagraphBlock) for b in doc.blocks)
 
 
 def test_package_corpus_includes_document_xml(tmp_path: Path) -> None:
@@ -438,3 +451,106 @@ def test_package_corpus_includes_document_xml(tmp_path: Path) -> None:
     names = [name for name, _ in iter_package_texts(path)]
     assert "word/document.xml" in names
     assert "visible token xyzzy" in package_corpus(path)
+
+
+def test_instr_text_is_its_own_block(tmp_path: Path) -> None:
+    email = "field.only@mail.com"
+    path = _write_docx(tmp_path / "instr.docx", lambda d: d.add_paragraph("body"))
+    _inject_instr_mailto(path, email)
+    doc = DocxDocument(path)
+    assert any(isinstance(b, InstrTextBlock) and email in b.text for b in doc.blocks)
+    extracted = doc.extract_text()
+    assert email in extracted
+    start = extracted.index(email)
+    doc.apply([_entity(email, start, replacement="safe@ex.com")])
+    assert email not in doc.rendered_text()
+    out = tmp_path / "instr-out.docx"
+    doc.save(out)
+    assert email not in package_corpus(out)
+    assert "safe@ex.com" in package_corpus(out)
+
+
+def test_textbox_paragraph_is_extracted(tmp_path: Path) -> None:
+    path = _write_docx(tmp_path / "txbx.docx", lambda d: d.add_paragraph("body"))
+    secret = "txbx-secret@mail.com"
+    _inject_textbox_paragraph(path, secret)
+    doc = DocxDocument(path)
+    assert secret in doc.extract_text()
+    start = doc.extract_text().index(secret)
+    doc.apply([_entity(secret, start, replacement="gone@ex.com")])
+    out = tmp_path / "txbx-out.docx"
+    doc.save(out)
+    assert secret not in package_corpus(out)
+
+
+def test_header_part_instr_text_extracted(tmp_path: Path) -> None:
+    email = "header.field@mail.com"
+
+    def build(d: Document) -> None:
+        d.add_paragraph("body")
+        d.sections[0].header.paragraphs[0].text = "hdr"
+
+    path = _write_docx(tmp_path / "hdr.docx", build)
+    _inject_instr_mailto(path, email, part_name="word/header1.xml")
+    doc = DocxDocument(path)
+    assert email in doc.extract_text()
+
+
+def _inject_instr_mailto(
+    path: Path, email: str, *, part_name: str = "word/document.xml"
+) -> None:
+    import zipfile
+
+    with zipfile.ZipFile(path, "r") as zf:
+        xml = zf.read(part_name).decode("utf-8")
+        other = {name: zf.read(name) for name in zf.namelist() if name != part_name}
+
+    marker = "</w:body>" if part_name.endswith("document.xml") else None
+    if marker is None:
+        # header/footer roots close with </w:hdr> / </w:ftr>
+        for candidate in ("</w:hdr>", "</w:ftr>"):
+            if candidate in xml:
+                marker = candidate
+                break
+    assert marker is not None and marker in xml
+    snippet = (
+        "<w:p><w:r>"
+        f'<w:instrText xml:space="preserve"> HYPERLINK "mailto:{email}" </w:instrText>'
+        "</w:r></w:p>"
+    )
+    patched = xml.replace(marker, snippet + marker, 1)
+    tmp = path.with_suffix(".tmp.docx")
+    with zipfile.ZipFile(tmp, "w") as zf:
+        zf.writestr(part_name, patched.encode("utf-8"))
+        for name, data in other.items():
+            zf.writestr(name, data)
+    tmp.replace(path)
+
+
+def _inject_textbox_paragraph(path: Path, text: str) -> None:
+    import zipfile
+
+    with zipfile.ZipFile(path, "r") as zf:
+        xml = zf.read("word/document.xml").decode("utf-8")
+        other = {
+            name: zf.read(name) for name in zf.namelist() if name != "word/document.xml"
+        }
+
+    marker = "</w:body>"
+    assert marker in xml
+    # Minimal txbxContent wrapper; namespaces inherit from the document root.
+    snippet = (
+        "<w:p><w:r><w:pict>"
+        '<v:shape xmlns:v="urn:schemas-microsoft-com:vml">'
+        '<v:textbox><w:txbxContent>'
+        f"<w:p><w:r><w:t>{text}</w:t></w:r></w:p>"
+        "</w:txbxContent></v:textbox></v:shape>"
+        "</w:pict></w:r></w:p>"
+    )
+    patched = xml.replace(marker, snippet + marker, 1)
+    tmp = path.with_suffix(".tmp.docx")
+    with zipfile.ZipFile(tmp, "w") as zf:
+        zf.writestr("word/document.xml", patched.encode("utf-8"))
+        for name, data in other.items():
+            zf.writestr(name, data)
+    tmp.replace(path)

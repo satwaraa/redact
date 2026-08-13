@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import bisect
+import re
 import zipfile
 from collections.abc import Iterator, Sequence
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
 from docx import Document as _open_docx
 from docx.document import Document as _Document
-from docx.table import Table
+from docx.oxml.ns import qn
 from docx.text.paragraph import Paragraph
 from docx.text.run import Run
 
 from pii_redaction.models import DocumentError, PIIEntity, assert_consistent
+
+_STORY_PART_RE = re.compile(r"/word/(document|header\d+|footer\d+)\.xml$")
 
 
 def iter_package_texts(path: Path | str) -> Iterator[tuple[str, str]]:
@@ -33,8 +37,93 @@ def package_corpus(path: Path | str) -> str:
     return "\n".join(text for _, text in iter_package_texts(path))
 
 
+@runtime_checkable
+class TextBlock(Protocol):
+    @property
+    def text(self) -> str: ...
+
+    def replace_span(self, start: int, end: int, replacement: str) -> None: ...
+
+
+class ParagraphBlock:
+    """Paragraph story content; splice goes through python-docx runs."""
+
+    __slots__ = ("_paragraph",)
+
+    def __init__(self, paragraph: Paragraph) -> None:
+        self._paragraph = paragraph
+
+    @property
+    def text(self) -> str:
+        return self._paragraph.text
+
+    @property
+    def runs(self) -> list[Run]:
+        return list(self._paragraph.runs)
+
+    @property
+    def paragraph(self) -> Paragraph:
+        return self._paragraph
+
+    def replace_span(self, start: int, end: int, replacement: str) -> None:
+        _splice_paragraph(self._paragraph, start, end, replacement)
+
+
+class InstrTextBlock:
+    """One ``w:instrText`` node as its own block (PLAN A1)."""
+
+    __slots__ = ("_element",)
+
+    def __init__(self, element: object) -> None:
+        self._element = element
+
+    @property
+    def text(self) -> str:
+        return getattr(self._element, "text", None) or ""
+
+    def replace_span(self, start: int, end: int, replacement: str) -> None:
+        current = self.text
+        if start < 0 or end > len(current) or start >= end:
+            raise DocumentError(
+                f"local span {start}:{end} out of range for instrText length "
+                f"{len(current)}"
+            )
+        self._element.text = current[:start] + replacement + current[end:]
+
+
+def _iter_story_parts(doc: _Document) -> list[object]:
+    """Document part first, then every header/footer part (PLAN A3)."""
+    main = doc.part
+    extras: list[object] = []
+    seen: set[int] = {id(main)}
+    for part in main.package.parts:
+        if id(part) in seen:
+            continue
+        if _STORY_PART_RE.search(str(part.partname)):
+            extras.append(part)
+            seen.add(id(part))
+    extras.sort(key=lambda p: str(p.partname))
+    return [main, *extras]
+
+
+def _iter_part_paragraphs(part: object) -> Iterator[Paragraph]:
+    """All ``w:p`` in the part, including those under ``w:txbxContent`` (A2)."""
+    element = getattr(part, "element", None)
+    if element is None:
+        return
+    for p_el in element.iter(qn("w:p")):
+        yield Paragraph(p_el, part)
+
+
+def _iter_part_instr_texts(part: object) -> Iterator[object]:
+    element = getattr(part, "element", None)
+    if element is None:
+        return
+    yield from element.iter(qn("w:instrText"))
+
+
 class DocxDocument:
-    """Load a .docx, expose flat paragraph blocks, splice replacements into runs."""
+    """Load a .docx, expose flat text blocks, splice replacements, save."""
 
     def __init__(self, path: Path | str) -> None:
         self._path = Path(path).resolve()
@@ -42,7 +131,7 @@ class DocxDocument:
             self._doc: _Document = _open_docx(str(self._path))
         except Exception as exc:  # noqa: BLE001 — wrap as DocumentError
             raise DocumentError(f"cannot open docx: {self._path}") from exc
-        self._blocks: list[Paragraph] = list(self._iter_paragraphs())
+        self._blocks: list[TextBlock] = list(self._collect_blocks())
         self._block_spans: list[tuple[int, int]] = []
         self._cached_text: str | None = None
 
@@ -51,64 +140,30 @@ class DocxDocument:
         return self._path
 
     @property
-    def blocks(self) -> Sequence[Paragraph]:
+    def blocks(self) -> Sequence[TextBlock]:
         return self._blocks
 
-    def _iter_paragraphs(self) -> Iterator[Paragraph]:
-        yield from self._walk_container(self._doc)
-        seen_header_ids: set[int] = set()
-        seen_footer_ids: set[int] = set()
-        for section in self._doc.sections:
-            header = section.header
-            header_id = id(header._element)  # noqa: SLF001
-            if header_id not in seen_header_ids:
-                seen_header_ids.add(header_id)
-                if not _is_linked_to_previous(header):
-                    yield from self._iter_nonempty_hf(header)
-            footer = section.footer
-            footer_id = id(footer._element)  # noqa: SLF001
-            if footer_id not in seen_footer_ids:
-                seen_footer_ids.add(footer_id)
-                if not _is_linked_to_previous(footer):
-                    yield from self._iter_nonempty_hf(footer)
+    def _collect_blocks(self) -> Iterator[TextBlock]:
+        """Paragraphs from every story part, then each instrText as its own block."""
+        seen_p: set[int] = set()
+        seen_instr: set[int] = set()
+        instr_blocks: list[InstrTextBlock] = []
 
-    def _iter_nonempty_hf(self, header_or_footer: object) -> Iterator[Paragraph]:
-        """Yield header/footer paragraphs only when the part has real text.
-
-        python-docx often materialises an empty unlinked header/footer on save;
-        including those would append spurious empty blocks and shift offsets.
-        """
-        paragraphs = list(self._walk_container(header_or_footer))
-        if not any(p.text for p in paragraphs):
-            return
-        yield from paragraphs
-
-    def _walk_container(self, container: object) -> Iterator[Paragraph]:
-        iter_inner = getattr(container, "iter_inner_content", None)
-        if iter_inner is None:
-            paragraphs = getattr(container, "paragraphs", None)
-            if paragraphs is not None:
-                yield from paragraphs
-            tables = getattr(container, "tables", None)
-            if tables is not None:
-                for table in tables:
-                    yield from self._walk_table(table)
-            return
-        for item in iter_inner():
-            if isinstance(item, Paragraph):
-                yield item
-            elif isinstance(item, Table):
-                yield from self._walk_table(item)
-
-    def _walk_table(self, table: Table) -> Iterator[Paragraph]:
-        seen_cells: set[int] = set()
-        for row in table.rows:
-            for cell in row.cells:
-                cell_id = id(cell._tc)  # noqa: SLF001
-                if cell_id in seen_cells:
+        for part in _iter_story_parts(self._doc):
+            for paragraph in _iter_part_paragraphs(part):
+                pid = id(paragraph._element)  # noqa: SLF001
+                if pid in seen_p:
                     continue
-                seen_cells.add(cell_id)
-                yield from self._walk_container(cell)
+                seen_p.add(pid)
+                yield ParagraphBlock(paragraph)
+            for instr in _iter_part_instr_texts(part):
+                iid = id(instr)
+                if iid in seen_instr:
+                    continue
+                seen_instr.add(iid)
+                instr_blocks.append(InstrTextBlock(instr))
+
+        yield from instr_blocks
 
     def extract_text(self) -> str:
         if self._cached_text is not None:
@@ -165,11 +220,11 @@ class DocxDocument:
                 (local_start, local_end, entity.replacement)
             )
         for block_idx, spans in by_block.items():
-            paragraph = self._blocks[block_idx]
+            block = self._blocks[block_idx]
             for local_start, local_end, replacement in sorted(
                 spans, key=lambda s: s[0], reverse=True
             ):
-                _splice_paragraph(paragraph, local_start, local_end, replacement)
+                block.replace_span(local_start, local_end, replacement)
         self._cached_text = None
         self._block_spans = []
 
@@ -197,15 +252,6 @@ def _assert_non_overlapping(entities: Sequence[PIIEntity]) -> None:
                 f"overlapping entities at {left.start}:{left.end} and "
                 f"{right.start}:{right.end}"
             )
-
-
-def _is_linked_to_previous(header_or_footer: object) -> bool:
-    is_linked = getattr(header_or_footer, "is_linked_to_previous", None)
-    if callable(is_linked):
-        return bool(is_linked())
-    if isinstance(is_linked, bool):
-        return is_linked
-    return False
 
 
 def _run_text(run: Run) -> str:

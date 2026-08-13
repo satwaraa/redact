@@ -157,3 +157,21 @@ false positives and lifts F1 slightly (0.884 → 0.894) while cutting recall by
 off.
 
 Defaults after B7/B8: `ner_model=en_core_web_sm`, `ner_agreement=False`.
+
+## D3 — CI metric ratchet
+
+`evaluation/baselines.json` holds floor values for:
+
+1. `sample_corpus_rules` — small synthetic corpus, `--no-ner` (always cheap)
+2. `pages_sample_ner_sm` — D1 pages sample with default `en_core_web_sm`
+
+CI downloads `en_core_web_sm` and runs:
+
+```bash
+uv run python evaluation/assert_baselines.py
+```
+
+Floors sit slightly under the measured B7/B8 numbers so ordinary float noise
+does not flake, but a change that buys recall by wrecking precision (or drops
+micro recall below ~0.80 on the pages sample) fails the job. Raise the floors
+when a real improvement lands; do not lower them to green-wash a regression.

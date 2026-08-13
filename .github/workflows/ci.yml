@@ -14,9 +14,13 @@ jobs:
           enable-cache: true
       - name: Sync dependencies
         run: uv sync --group dev
+      - name: Install spaCy model
+        run: uv run python -m spacy download en_core_web_sm
       - name: Ruff
         run: uv run ruff check
       - name: Mypy
         run: uv run mypy src
       - name: Pytest
         run: uv run pytest
+      - name: Metric baselines
+        run: uv run python evaluation/assert_baselines.py

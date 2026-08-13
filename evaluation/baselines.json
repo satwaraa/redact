@@ -1,0 +1,43 @@
+{
+  "description": "D3 metric floors for CI. Tuned slightly below measured pages_sample / sample_corpus numbers so float noise does not flake, but a recall-for-precision trade that wrecks P still fails.",
+  "seed": 0,
+  "policy": "relaxed",
+  "suites": [
+    {
+      "id": "sample_corpus_rules",
+      "corpus": "evaluation/sample_corpus.json",
+      "use_ner": false,
+      "ner_model": null,
+      "ner_agreement": false,
+      "min_micro_precision": 0.98,
+      "min_micro_recall": 0.80,
+      "min_micro_f1": 0.88,
+      "per_type": {
+        "EMAIL": {"min_precision": 0.98, "min_recall": 0.98},
+        "PHONE": {"min_precision": 0.98, "min_recall": 0.98},
+        "ADDRESS": {"min_precision": 0.98, "min_recall": 0.98},
+        "SSN": {"min_precision": 0.98, "min_recall": 0.98},
+        "CREDIT_CARD": {"min_precision": 0.98, "min_recall": 0.98},
+        "DOB": {"min_precision": 0.98, "min_recall": 0.98},
+        "IP_ADDRESS": {"min_precision": 0.98, "min_recall": 0.98}
+      }
+    },
+    {
+      "id": "pages_sample_ner_sm",
+      "corpus": "evaluation/pages_sample_corpus.json",
+      "use_ner": true,
+      "ner_model": "en_core_web_sm",
+      "ner_agreement": false,
+      "min_micro_precision": 0.90,
+      "min_micro_recall": 0.80,
+      "min_micro_f1": 0.85,
+      "per_type": {
+        "EMAIL": {"min_precision": 0.98, "min_recall": 0.98},
+        "PHONE": {"min_precision": 0.98, "min_recall": 0.98},
+        "ADDRESS": {"min_precision": 0.98, "min_recall": 0.95},
+        "FULL_NAME": {"min_precision": 0.85, "min_recall": 0.70},
+        "COMPANY": {"min_precision": 0.80, "min_recall": 0.55}
+      }
+    }
+  ]
+}

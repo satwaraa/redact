@@ -319,20 +319,24 @@ class PhoneDetector(RegexDetector):
     name = "phone"
     pii_type = PIIType.PHONE
     priority = PRIORITY_REGEX
+    # Horizontal whitespace only — ``\s`` would stitch digits across paragraphs
+    # (table cells, "December YYYY" + day) into false phones.
     pattern = re.compile(
         r"(?<!\w)"
         r"(?P<value>"
         r"(?:"
-        r"(?:\+\s*91[\s\-]*)?(?:\d[\s\-]*){8,12}\d"
-        r"|(?:\+?\s*1[\s\-.]*)?\(?\d{3}\)?[\s\-.]+\d{3}[\s\-.]+\d{4}"
+        r"(?:\+[ \t]*91[ \t\-]*)?(?:\d[ \t\-]*){8,12}\d"
+        r"|(?:\+?[ \t]*1[ \t\-.]*)?\(?\d{3}\)?[ \t\-.]+\d{3}[ \t\-.]+\d{4}"
         r")"
-        r"(?:\s*(?:x|ext\.?)\s*\d{1,5})?"
+        r"(?:[ \t]*(?:x|ext\.?)[ \t]*\d{1,5})?"
         r")"
         r"(?!\w)"
     )
 
     def validate(self, match: re.Match[str], text: str, config: RedactorConfig) -> bool:
         start, _, value = self._span(match)
+        if "\n" in value or "\r" in value:
+            return False
         if _reject_reference(text, start, config):
             return False
         digits = _NON_DIGIT.sub("", value)
@@ -390,8 +394,11 @@ class IPAddressDetector(RegexDetector):
         if _VERSIONISH_PREFIX.search(left):
             return False
         try:
-            ipaddress.ip_address(value)
+            addr = ipaddress.ip_address(value)
         except ValueError:
+            return False
+        # ``::`` / ``0.0.0.0`` parse as valid but are noise in binary/XML corpora.
+        if addr.is_unspecified:
             return False
         return True
 

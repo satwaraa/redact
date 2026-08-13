@@ -165,6 +165,14 @@ def test_address_does_not_span_paragraphs() -> None:
         ("Ticket #1234567890", "support ticket id, not a phone"),
         ("Order 9876543210", "order number masquerading as phone"),
         ("Invoice No. 4111111111111111", "invoice reference, not a phone"),
+        (
+            "December 2024\n1\n234\n56 next",
+            "year/day fragments across newlines are not a phone",
+        ),
+        (
+            "headcount\n100\n200\n300\n400\ntail",
+            "table cell digits must not stitch across paragraphs",
+        ),
     ],
 )
 def test_phone_negatives(text: str, reason: str) -> None:
@@ -203,6 +211,8 @@ def test_ssn_negatives(text: str, reason: str) -> None:
         ("999.1.1.1", "octet out of range"),
         ("version 1.2.3.4", "software version, not an IP"),
         ("Section 10.0.0.1", "document section numbering"),
+        ("addr :: here", "unspecified IPv6 is noise, not a host"),
+        ("bind 0.0.0.0 please", "unspecified IPv4 is not document PII"),
     ],
 )
 def test_ip_negatives(text: str, reason: str) -> None:

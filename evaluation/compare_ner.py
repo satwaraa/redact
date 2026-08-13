@@ -20,8 +20,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from evaluation.evaluate import load_ground_truth, run_evaluation
-from pii_redaction.models import ModelUnavailableError
+from evaluation.evaluate import load_ground_truth, run_evaluation  # noqa: E402
+from pii_redaction.models import ModelUnavailableError  # noqa: E402
 
 
 def _micro(result: dict[str, Any]) -> dict[str, Any]:

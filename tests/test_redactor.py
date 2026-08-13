@@ -310,6 +310,57 @@ def test_verify_rule_recall_passes_when_replaced() -> None:
     )
 
 
+def test_verify_rule_recall_flags_unreplaced_phone() -> None:
+    with pytest.raises(LeakDetectedError) as exc_info:
+        verify_rule_recall(
+            "call +91 9876543210 now",
+            "still +91 9876543210 here",
+            _cfg(),
+        )
+    assert "PHONE" in str(exc_info.value)
+
+
+def test_c2_does_not_flag_phone_shaped_xml_attribute_ids(tmp_path: Path) -> None:
+    """C2 runs on story text; OOXML attribute digit runs must not abort redaction."""
+    src = _write_simple_docx(tmp_path / "in.docx", "plain prospectus prose")
+    with zipfile.ZipFile(src, "r") as zf:
+        xml = zf.read("word/document.xml").decode("utf-8")
+        other = {
+            name: zf.read(name) for name in zf.namelist() if name != "word/document.xml"
+        }
+    marker = "</w:body>"
+    assert marker in xml
+    # 10-digit w:id values match the bare phone regex on raw package_corpus.
+    snippet = (
+        '<w:bookmarkStart w:id="9876543210" w:name="noise"/>'
+        '<w:bookmarkEnd w:id="9876543210"/>'
+    )
+    patched = xml.replace(marker, snippet + marker, 1)
+    tmp = src.with_suffix(".tmp.docx")
+    with zipfile.ZipFile(tmp, "w") as zf:
+        zf.writestr("word/document.xml", patched.encode("utf-8"))
+        for name, data in other.items():
+            zf.writestr(name, data)
+    tmp.replace(src)
+
+    assert "9876543210" in package_corpus(src)
+    dst = tmp_path / "out.docx"
+    Redactor(_cfg()).redact_document(src, dst)
+    assert dst.exists()
+    assert "9876543210" in package_corpus(dst)
+
+
+def test_cross_line_digit_runs_are_not_phones(tmp_path: Path) -> None:
+    """Table/year fragments across paragraphs must not become C2 phone leaks."""
+    src = _write_docx(
+        tmp_path / "in.docx",
+        ["December 2024", "1", "234", "56", "Employee count", "100", "200", "300", "400"],
+    )
+    dst = tmp_path / "out.docx"
+    Redactor(_cfg()).redact_document(src, dst)
+    assert dst.exists()
+
+
 def test_verify_package_no_leaks_scans_raw_parts(tmp_path: Path) -> None:
     email = "hidden@mail.com"
     src = _write_simple_docx(tmp_path / "pkg.docx", "no visible pii")

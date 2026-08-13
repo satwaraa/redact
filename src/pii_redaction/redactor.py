@@ -221,6 +221,9 @@ def verify_rule_recall(
 
     Independent of the detection list used for redaction: anything the rules find
     in the source and still find in the result is a recall failure.
+
+    Callers must pass story text (extract/render), not raw ``package_corpus``
+    XML/binary — structural digit runs there are not PII.
     """
     before = collect_rule_values(input_text, config)
     after = collect_rule_values(output_text, config)
@@ -367,17 +370,16 @@ class Redactor:
         doc.apply(assigned)
         rendered = doc.rendered_text()
         if self.config.verify_output:
+            # C2 runs on the story surface detectors see (extract/render), not
+            # raw package bytes — OOXML attribute ids and binary parts yield
+            # phone/IP-shaped false positives that survive serialization.
             verify_no_leaks(assigned, rendered, original_text=text)
+            verify_rule_recall(text, rendered, self.config)
 
         doc.save(output)
         if self.config.verify_output:
             try:
                 verify_package_no_leaks(assigned, output)
-                verify_rule_recall(
-                    package_corpus(source),
-                    package_corpus(output),
-                    self.config,
-                )
             except LeakDetectedError:
                 output.unlink(missing_ok=True)
                 raise

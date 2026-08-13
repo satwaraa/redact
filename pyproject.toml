@@ -7,7 +7,8 @@ requires-python = ">=3.11"
 dependencies = [
     "faker>=40.36.0",
     "python-docx>=1.2.0",
-    "spacy>=3.7.0",
+    "spacy>=3.8,<3.9",
+    "en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
 ]
 
 [project.scripts]
@@ -16,6 +17,10 @@ redact = "pii_redaction.cli:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# Required for the pinned en_core_web_sm wheel URL in [project.dependencies].
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pii_redaction"]

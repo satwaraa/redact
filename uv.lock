@@ -403,6 +403,14 @@ wheels = [
 ]
 
 [[package]]
+name = "en-core-web-sm"
+version = "3.8.0"
+source = { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" }
+wheels = [
+    { url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl", hash = "sha256:1932429db727d4bff3deed6b34cfc05df17794f4a52eeb26cf8928f7c1a0fb85" },
+]
+
+[[package]]
 name = "faker"
 version = "40.36.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1374,6 +1382,7 @@ name = "redact"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "en-core-web-sm" },
     { name = "faker" },
     { name = "python-docx" },
     { name = "spacy" },
@@ -1389,9 +1398,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "en-core-web-sm", url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" },
     { name = "faker", specifier = ">=40.36.0" },
     { name = "python-docx", specifier = ">=1.2.0" },
-    { name = "spacy", specifier = ">=3.7.0" },
+    { name = "spacy", specifier = ">=3.8,<3.9" },
 ]
 
 [package.metadata.requires-dev]

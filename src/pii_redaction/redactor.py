@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 from collections import Counter
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from pii_redaction.detectors import get_detectors
-from pii_redaction.document import DocxDocument
+from pii_redaction.document import DocxDocument, package_corpus
 from pii_redaction.models import (
     DocumentError,
     LeakDetectedError,
@@ -176,6 +177,67 @@ def verify_no_leaks(
         raise LeakDetectedError(pii_type, count)
 
 
+def verify_package_no_leaks(
+    entities: Sequence[PIIEntity],
+    package_path: Path | str,
+) -> None:
+    """C1: search every serialized package part for surviving original values."""
+    searchable = _mask_replacements(package_corpus(package_path), entities)
+    leaks: Counter[PIIType] = Counter()
+    for entity in entities:
+        if entity.replacement is None or len(entity.text) < _LEAK_MIN_LEN:
+            continue
+        if entity.text in searchable:
+            leaks[entity.pii_type] += 1
+            logger.warning(
+                "package leak type=%s offsets=%d:%d length=%d",
+                entity.pii_type.value,
+                entity.start,
+                entity.end,
+                len(entity.text),
+            )
+    if leaks:
+        pii_type, count = leaks.most_common(1)[0]
+        raise LeakDetectedError(pii_type, count)
+
+
+def collect_rule_values(text: str, config: RedactorConfig) -> dict[str, PIIType]:
+    """PII-shaped strings found by rule detectors only (no NER)."""
+    rule_cfg = replace(config, use_ner=False, verify_output=False)
+    values: dict[str, PIIType] = {}
+    for detector in get_detectors(rule_cfg):
+        for entity in detector.detect(text, rule_cfg):
+            if len(entity.text) >= _LEAK_MIN_LEN:
+                values.setdefault(entity.text, entity.pii_type)
+    return values
+
+
+def verify_rule_recall(
+    input_text: str,
+    output_text: str,
+    config: RedactorConfig,
+) -> None:
+    """C2: rule-shaped values present in both input and output are unreplaced originals.
+
+    Independent of the detection list used for redaction: anything the rules find
+    in the source and still find in the result is a recall failure.
+    """
+    before = collect_rule_values(input_text, config)
+    after = collect_rule_values(output_text, config)
+    leaks: Counter[PIIType] = Counter()
+    for value, pii_type in before.items():
+        if value in after:
+            leaks[pii_type] += 1
+            logger.warning(
+                "recall-probe leak type=%s length=%d",
+                pii_type.value,
+                len(value),
+            )
+    if leaks:
+        pii_type, count = leaks.most_common(1)[0]
+        raise LeakDetectedError(pii_type, count)
+
+
 def _fits_single_block(doc: DocxDocument, entity: PIIEntity) -> bool:
     """True when the entity lies entirely inside one paragraph block."""
     try:
@@ -231,6 +293,7 @@ class Redactor:
         redacted = apply_text(text, assigned)
         if self.config.verify_output:
             verify_no_leaks(assigned, redacted, original_text=text)
+            verify_rule_recall(text, redacted, self.config)
         return assigned, dict(factory.mapping), redacted
 
     def redact_text(self, text: str) -> RedactionResult:
@@ -300,15 +363,29 @@ class Redactor:
         if dst is None:
             raise DocumentError("output path required when not dry-run")
 
+        output = Path(dst)
         doc.apply(assigned)
         rendered = doc.rendered_text()
         if self.config.verify_output:
             verify_no_leaks(assigned, rendered, original_text=text)
-        doc.save(dst)
+
+        doc.save(output)
+        if self.config.verify_output:
+            try:
+                verify_package_no_leaks(assigned, output)
+                verify_rule_recall(
+                    package_corpus(source),
+                    package_corpus(output),
+                    self.config,
+                )
+            except LeakDetectedError:
+                output.unlink(missing_ok=True)
+                raise
+
         logger.info(
             "wrote output entities=%d path_suffix=%s",
             len(assigned),
-            Path(dst).suffix,
+            output.suffix,
         )
         return RedactionResult(
             entities=tuple(assigned),

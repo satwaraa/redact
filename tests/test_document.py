@@ -11,7 +11,7 @@ from docx import Document
 from docx.shared import Pt
 from docx.text.paragraph import Paragraph
 
-from pii_redaction.document import DocxDocument
+from pii_redaction.document import DocxDocument, iter_package_texts, package_corpus
 from pii_redaction.models import PRIORITY_REGEX, DocumentError, PIIEntity, PIIType
 
 
@@ -428,3 +428,13 @@ class TestDocumentedLimitations:
         )
         doc = DocxDocument(path)
         assert all(isinstance(b, Paragraph) for b in doc.blocks)
+
+
+def test_package_corpus_includes_document_xml(tmp_path: Path) -> None:
+    path = _write_docx(
+        tmp_path / "pkg.docx",
+        lambda d: d.add_paragraph("visible token xyzzy"),
+    )
+    names = [name for name, _ in iter_package_texts(path)]
+    assert "word/document.xml" in names
+    assert "visible token xyzzy" in package_corpus(path)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,8 @@ from pii_redaction.redactor import (
     apply_text,
     expand_occurrences,
     verify_no_leaks,
+    verify_package_no_leaks,
+    verify_rule_recall,
 )
 
 
@@ -287,3 +290,77 @@ def test_apply_text_right_to_left() -> None:
         replacement="TWO",
     )
     assert apply_text(text, [e1, e2]) == "ONE and TWO"
+
+
+def test_verify_rule_recall_flags_unreplaced_value() -> None:
+    with pytest.raises(LeakDetectedError) as exc_info:
+        verify_rule_recall(
+            "contact manisha.shukla@hdfcbank.com please",
+            "still manisha.shukla@hdfcbank.com here",
+            _cfg(),
+        )
+    assert "EMAIL" in str(exc_info.value)
+
+
+def test_verify_rule_recall_passes_when_replaced() -> None:
+    verify_rule_recall(
+        "contact manisha.shukla@hdfcbank.com please",
+        "contact replaced@example.com please",
+        _cfg(),
+    )
+
+
+def test_verify_package_no_leaks_scans_raw_parts(tmp_path: Path) -> None:
+    email = "hidden@mail.com"
+    src = _write_simple_docx(tmp_path / "pkg.docx", "no visible pii")
+    _inject_instr_mailto(src, email)
+    entities = [
+        PIIEntity(
+            pii_type=PIIType.EMAIL,
+            text=email,
+            start=0,
+            end=len(email),
+            source="test",
+            priority=PRIORITY_REGEX,
+            replacement="x@y.co",
+        )
+    ]
+    with pytest.raises(LeakDetectedError) as exc_info:
+        verify_package_no_leaks(entities, src)
+    assert "EMAIL" in str(exc_info.value)
+
+
+def test_recall_probe_catches_field_code_email(tmp_path: Path) -> None:
+    """C2: email only in instrText survives body redaction and must fail verify."""
+    email = "manisha.shukla@hdfcbank.com"
+    src = _write_simple_docx(tmp_path / "in.docx", "visible a@b.co only")
+    _inject_instr_mailto(src, email)
+    dst = tmp_path / "out.docx"
+    with pytest.raises(LeakDetectedError) as exc_info:
+        Redactor(_cfg()).redact_document(src, dst)
+    assert "EMAIL" in str(exc_info.value)
+    assert not dst.exists()
+
+
+def _inject_instr_mailto(path: Path, email: str) -> None:
+    """Append a HYPERLINK mailto field into word/document.xml (extractor-blind)."""
+    with zipfile.ZipFile(path, "r") as zf:
+        xml = zf.read("word/document.xml").decode("utf-8")
+        other = {
+            name: zf.read(name) for name in zf.namelist() if name != "word/document.xml"
+        }
+
+    marker = "</w:body>"
+    assert marker in xml
+    snippet = (
+        "<w:p><w:r>"
+        f'<w:instrText xml:space="preserve"> HYPERLINK "mailto:{email}" </w:instrText>'
+        "</w:r></w:p>"
+    )
+    patched = xml.replace(marker, snippet + marker, 1)
+    tmp = path.with_suffix(".tmp.docx")
+    with zipfile.ZipFile(tmp, "w") as zf:
+        zf.writestr("word/document.xml", patched.encode("utf-8"))
+        for name, data in other.items():
+            zf.writestr(name, data)
+    tmp.replace(path)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import bisect
+import zipfile
 from collections.abc import Iterator, Sequence
 from pathlib import Path
 
@@ -13,6 +14,23 @@ from docx.text.paragraph import Paragraph
 from docx.text.run import Run
 
 from pii_redaction.models import DocumentError, PIIEntity, assert_consistent
+
+
+def iter_package_texts(path: Path | str) -> Iterator[tuple[str, str]]:
+    """Yield ``(part_name, text)`` for every part in a serialized .docx package."""
+    package = Path(path)
+    try:
+        with zipfile.ZipFile(package) as zf:
+            for name in zf.namelist():
+                raw = zf.read(name)
+                yield name, raw.decode("utf-8", errors="ignore")
+    except zipfile.BadZipFile as exc:
+        raise DocumentError(f"cannot read docx package: {package}") from exc
+
+
+def package_corpus(path: Path | str) -> str:
+    """Concatenate every package part's text (for package-level leak probes)."""
+    return "\n".join(text for _, text in iter_package_texts(path))
 
 
 class DocxDocument:

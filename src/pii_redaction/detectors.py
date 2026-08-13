@@ -270,7 +270,6 @@ def get_detectors(config: RedactorConfig) -> list[Detector]:
         ner = NERDetector(
             model_name=config.ner_model,
             confidence_threshold=config.ner_confidence_threshold,
-            max_doc_freq=config.ner_max_doc_freq,
             require_agreement=config.ner_agreement,
         )
         if ner.emits_for(config.enabled_types):
@@ -398,9 +397,7 @@ class IPAddressDetector(RegexDetector):
         except ValueError:
             return False
         # ``::`` / ``0.0.0.0`` parse as valid but are noise in binary/XML corpora.
-        if addr.is_unspecified:
-            return False
-        return True
+        return not addr.is_unspecified
 
 
 class DOBDetector(RegexDetector):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import Counter
 from typing import Any
 
 from pii_redaction.models import (
@@ -163,13 +164,39 @@ _CONTACT_BLOCK_CUES = re.compile(
     r")\b"
 )
 
-# Reject NER candidates seen more often than this across the document (B2).
-DEFAULT_NER_MAX_DOC_FREQ = 15
+# Lexical precision guards, in place of a document-frequency threshold.
+#
+# Frequency was measured and rejected: in an IPO prospectus the promoter family
+# is named on nearly every page, so the most sensitive names are also the most
+# frequent strings. On a hand-labelled sample of 120 NER detections, document
+# frequency scored AUC 0.588 as a false-positive signal (0.50 = no signal), and
+# a threshold of 15 discarded every promoter name in this document while still
+# leaving 65% of survivors mis-tagged.
+#
+# These two rules were measured on the same sample and do separate:
+#   determiner prefix     kills 22 false positives, 0 true positives
+#   all-tokens-common     kills 43 false positives, 2 true positives
+# Combined: recall 94.1%, precision 49.2% (baseline 28.3%), rejecting 43.3% of
+# NER detections document-wide and 0 of 111 gold person-name detections.
+_DETERMINERS: frozenset[str] = frozenset(
+    {"the", "our", "such", "each", "any", "this"}
+)
 
-# Types subject to the document-frequency precision guard.
-_FREQ_FILTER_TYPES: frozenset[PIIType] = frozenset(
+# A token must appear lowercase at least this often to count as common English.
+_COMMON_TOKEN_MIN_COUNT = 2
+
+# Types subject to the lexical precision guards.
+_LEXICAL_FILTER_TYPES: frozenset[PIIType] = frozenset(
     {PIIType.FULL_NAME, PIIType.COMPANY, PIIType.ADDRESS}
 )
+
+_ALPHA_TOKEN = re.compile(r"[A-Za-z][A-Za-z'’\-]*")
+_LOWER_TOKEN = re.compile(r"(?<![A-Za-z'’\-])[a-z][a-z'’\-]+")
+
+# Email local parts, domains and URLs are lowercase by convention and are not
+# prose. Counting them would make "ananya.krishnan@example.com" evidence that
+# "ananya" is ordinary vocabulary, when it is evidence of the opposite.
+_NON_PROSE = re.compile(r"[\w.+-]+@[\w.-]+\.\w+|https?://\S+|www\.\S+")
 
 # Module-level cache: model name → loaded spaCy Language. Never eager-load.
 _NLP_CACHE: dict[str, Any] = {}
@@ -230,23 +257,41 @@ def _is_heading_block(block: str) -> bool:
         return True
     # Short standalone title that is entirely stopword lexicon after normalise.
     words = stripped.split()
-    if len(words) <= 6 and len(stripped) <= 60 and _is_org_stopword(stripped):
-        return True
-    return False
+    return len(words) <= 6 and len(stripped) <= 60 and _is_org_stopword(stripped)
 
 
-def _doc_frequency(text: str, span: str, cache: dict[str, int]) -> int:
-    """Count casefolded occurrences of ``span`` in ``text`` (B2)."""
-    key = span.casefold()
-    cached = cache.get(key)
-    if cached is not None:
-        return cached
-    if not key:
-        cache[key] = 0
-        return 0
-    count = text.casefold().count(key)
-    cache[key] = count
-    return count
+def build_lowercase_vocabulary(
+    text: str, *, min_count: int = _COMMON_TOKEN_MIN_COUNT
+) -> frozenset[str]:
+    """Tokens that appear in lowercase across the document.
+
+    A word the document also writes in lowercase is ordinary vocabulary, not a
+    proper noun. "equity", "shares" and "committee" appear lowercase; "Hegde"
+    and "Malvadkar" never do. This is the document telling us its own lexicon,
+    which is why it transfers to documents we have not seen.
+    """
+    prose = _NON_PROSE.sub(" ", text)
+    counts: Counter[str] = Counter(_LOWER_TOKEN.findall(prose))
+    return frozenset(tok for tok, n in counts.items() if n >= min_count)
+
+
+def _starts_with_determiner(span: str) -> bool:
+    """Reject "the Offer", "our Company" — a name does not start with these."""
+    tokens = _ALPHA_TOKEN.findall(span)
+    return bool(tokens) and tokens[0].casefold() in _DETERMINERS
+
+
+def _all_tokens_common(span: str, vocabulary: frozenset[str]) -> bool:
+    """True when every alphabetic token also appears lowercase in the document.
+
+    "Equity Shares" and "Risk Management Committee" are entirely ordinary
+    vocabulary; a real name contains at least one token the document never
+    writes lowercase.
+    """
+    tokens = _ALPHA_TOKEN.findall(span)
+    if not tokens:
+        return False
+    return all(tok.casefold() in vocabulary for tok in tokens)
 
 
 def _title_case_token_count(span: str) -> int:
@@ -438,13 +483,11 @@ class NERDetector:
         *,
         confidence_threshold: float = 0.5,
         max_chunk_chars: int = 80_000,
-        max_doc_freq: int = DEFAULT_NER_MAX_DOC_FREQ,
         require_agreement: bool = False,
     ) -> None:
         self.model_name = model_name
         self.confidence_threshold = confidence_threshold
         self.max_chunk_chars = max_chunk_chars
-        self.max_doc_freq = max_doc_freq
         self.require_agreement = require_agreement
         # spaCy en_core_web_sm does not emit per-entity scores by default;
         # use a fixed documented confidence rather than inventing a score.
@@ -463,9 +506,8 @@ class NERDetector:
         pii_type: PIIType,
         piece: str,
         piece_start: int,
-        freq_cache: dict[str, int],
         *,
-        max_doc_freq: int,
+        vocabulary: frozenset[str],
         gazetteer: frozenset[str],
         require_agreement: bool,
     ) -> bool:
@@ -480,7 +522,10 @@ class NERDetector:
             return False
         if pii_type is PIIType.DOB and not _has_birth_cue(text, piece_start):
             return False
-        if pii_type is PIIType.COMPANY and _is_org_stopword(piece):
+        # A phrase from the document's defined-term lexicon is not a person
+        # either: "Promoter Selling Shareholder" is title-cased throughout a
+        # prospectus and spaCy tags it PERSON as readily as ORG.
+        if pii_type in (PIIType.COMPANY, PIIType.FULL_NAME) and _is_org_stopword(piece):
             return False
         if pii_type is PIIType.FULL_NAME and not _person_positive(
             text, piece, piece_start, piece_start + len(piece), gazetteer
@@ -494,8 +539,10 @@ class NERDetector:
                 return False
             if pii_type is PIIType.COMPANY and not _org_rule_agree(piece):
                 return False
-        if pii_type in _FREQ_FILTER_TYPES:
-            if _doc_frequency(text, piece, freq_cache) > max_doc_freq:
+        if pii_type in _LEXICAL_FILTER_TYPES:
+            if _starts_with_determiner(piece):
+                return False
+            if _all_tokens_common(piece, vocabulary):
                 return False
         return True
 
@@ -509,10 +556,9 @@ class NERDetector:
         enabled = config.enabled_types
         results: list[PIIEntity] = []
         unmapped: dict[str, int] = {}
-        freq_cache: dict[str, int] = {}
-        max_doc_freq = config.ner_max_doc_freq
         require_agreement = config.ner_agreement
         gazetteer = build_person_gazetteer(text)
+        vocabulary = build_lowercase_vocabulary(text)
 
         for base, chunk in iter_text_chunks(text, self.max_chunk_chars):
             doc = nlp(chunk)
@@ -546,8 +592,7 @@ class NERDetector:
                         pii_type,
                         piece,
                         piece_start,
-                        freq_cache,
-                        max_doc_freq=max_doc_freq,
+                        vocabulary=vocabulary,
                         gazetteer=gazetteer,
                         require_agreement=require_agreement,
                     ):

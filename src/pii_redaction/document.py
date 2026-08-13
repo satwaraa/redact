@@ -8,7 +8,7 @@ import re
 import zipfile
 from collections.abc import Iterator, Sequence
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 from xml.etree import ElementTree as ET
 
 from docx import Document as _open_docx
@@ -81,7 +81,7 @@ class InstrTextBlock:
 
     __slots__ = ("_element",)
 
-    def __init__(self, element: object) -> None:
+    def __init__(self, element: Any) -> None:
         self._element = element
 
     @property
@@ -98,10 +98,10 @@ class InstrTextBlock:
         self._element.text = current[:start] + replacement + current[end:]
 
 
-def _iter_story_parts(doc: _Document) -> list[object]:
+def _iter_story_parts(doc: _Document) -> list[Any]:
     """Document part first, then every header/footer part (PLAN A3)."""
     main = doc.part
-    extras: list[object] = []
+    extras: list[Any] = []
     seen: set[int] = {id(main)}
     for part in main.package.parts:
         if id(part) in seen:
@@ -113,7 +113,7 @@ def _iter_story_parts(doc: _Document) -> list[object]:
     return [main, *extras]
 
 
-def _iter_part_paragraphs(part: object) -> Iterator[Paragraph]:
+def _iter_part_paragraphs(part: Any) -> Iterator[Paragraph]:
     """All ``w:p`` in the part, including those under ``w:txbxContent`` (A2)."""
     element = getattr(part, "element", None)
     if element is None:
@@ -122,7 +122,7 @@ def _iter_part_paragraphs(part: object) -> Iterator[Paragraph]:
         yield Paragraph(p_el, part)
 
 
-def _iter_part_instr_texts(part: object) -> Iterator[object]:
+def _iter_part_instr_texts(part: Any) -> Iterator[Any]:
     element = getattr(part, "element", None)
     if element is None:
         return
@@ -309,7 +309,7 @@ class DocxDocument:
             raise DocumentError(f"cannot save docx: {out}") from exc
 
 
-def _find_part(doc: _Document, partname: str) -> object | None:
+def _find_part(doc: _Document, partname: str) -> Any | None:
     for part in doc.part.package.parts:
         if str(part.partname) == partname:
             return part

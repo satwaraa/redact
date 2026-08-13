@@ -115,7 +115,6 @@ class RedactorConfig:
     use_ner: bool = True
     ner_model: str = "en_core_web_sm"
     ner_confidence_threshold: float = 0.5
-    ner_max_doc_freq: int = 15
     # B8: require model ∩ structural heuristic for FULL_NAME / COMPANY.
     ner_agreement: bool = False
     redact_reference_numbers: bool = False

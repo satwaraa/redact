@@ -17,12 +17,15 @@ from pii_redaction.models import (
 )
 from pii_redaction.ner import (
     NERDetector,
-    clear_nlp_cache,
-    clip_at_newlines,
-    iter_text_chunks,
+    _all_tokens_common,
     _is_field_label,
     _is_heading_block,
     _is_org_stopword,
+    _starts_with_determiner,
+    build_lowercase_vocabulary,
+    clear_nlp_cache,
+    clip_at_newlines,
+    iter_text_chunks,
 )
 
 
@@ -88,7 +91,11 @@ def test_clip_at_newlines_splits_and_strips() -> None:
     pieces = clip_at_newlines(text, start, end)
     assert [(text[s:e], s, e) for s, e in pieces] == [
         ("Acme Corp", start, start + len("Acme Corp")),
-        ("Headquarters", text.index("Headquarters"), text.index("Headquarters") + len("Headquarters")),
+        (
+            "Headquarters",
+            text.index("Headquarters"),
+            text.index("Headquarters") + len("Headquarters"),
+        ),
     ]
     assert all("\n" not in text[s:e] for s, e in pieces)
 
@@ -220,28 +227,92 @@ def test_org_stopword_containment_drops_span(monkeypatch: pytest.MonkeyPatch) ->
     assert [e.text for e in entities] == ["Acme Components Private Limited"]
 
 
-def test_doc_freq_filter_rejects_boilerplate(monkeypatch: pytest.MonkeyPatch) -> None:
-    # Phrase not on the stopword list, but repeated above the default threshold.
-    phrase = "Zorp Widget Limited"
-    text = "\n".join([f"{phrase} appears here"] * 16 + ["Acme Corp Ltd once"])
+def test_starts_with_determiner() -> None:
+    assert _starts_with_determiner("the Offer")
+    assert _starts_with_determiner("our Company")
+    assert _starts_with_determiner("Such Bidder")
+    assert not _starts_with_determiner("Kushal Hegde")
+    assert not _starts_with_determiner("Theodore Banks")  # prefix, not the token
+    assert not _starts_with_determiner("")
+
+
+def test_lowercase_vocabulary_is_built_from_the_document() -> None:
+    text = "equity shares are listed\nthe equity shares of Hegde Industries\n"
+    vocab = build_lowercase_vocabulary(text)
+    assert "equity" in vocab
+    assert "shares" in vocab
+    # A proper noun the document never writes lowercase stays out of the lexicon.
+    assert "hegde" not in vocab
+
+
+def test_vocabulary_ignores_email_local_parts_and_urls() -> None:
+    """A name inside an email address is evidence it IS a name, not vocabulary."""
+    text = (
+        "Contact Person: Ananya Krishnan\n"
+        "E-mail: ananya.krishnan@example.com\n"
+        "reach ananya.krishnan@example.com or www.ananya-krishnan.example\n"
+    )
+    vocab = build_lowercase_vocabulary(text)
+    assert "ananya" not in vocab
+    assert "krishnan" not in vocab
+    assert not _all_tokens_common("Ananya Krishnan", vocab)
+
+
+def test_all_tokens_common_rejects_ordinary_vocabulary() -> None:
+    text = "the equity shares and the risk management committee met\n" * 2
+    vocab = build_lowercase_vocabulary(text)
+    assert _all_tokens_common("Equity Shares", vocab)
+    assert _all_tokens_common("Risk Management Committee", vocab)
+    # One token the document never lowercases is enough to keep the span.
+    assert not _all_tokens_common("Hegde Committee", vocab)
+    assert not _all_tokens_common("", vocab)
+
+
+def test_lexical_rules_reject_boilerplate(monkeypatch: pytest.MonkeyPatch) -> None:
+    text = "\n".join(
+        ["the offer of equity shares was made"] * 3
+        + ["The Offer Limited is described", "Acme Corp Ltd once"]
+    )
 
     def _nlp(chunk: str) -> _FakeDoc:
         ents = []
-        start = 0
-        while True:
-            i = chunk.find(phrase, start)
-            if i < 0:
-                break
-            ents.append(_FakeSpan(phrase, i, "ORG"))
-            start = i + 1
-        j = chunk.find("Acme Corp Ltd")
-        if j >= 0:
-            ents.append(_FakeSpan("Acme Corp Ltd", j, "ORG"))
+        for phrase in ("The Offer Limited", "Acme Corp Ltd"):
+            i = chunk.find(phrase)
+            if i >= 0:
+                ents.append(_FakeSpan(phrase, i, "ORG"))
         return _FakeDoc(ents)
 
     monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
     entities = NERDetector().detect(text, _cfg())
     assert [e.text for e in entities] == ["Acme Corp Ltd"]
+
+
+def test_frequent_real_name_is_still_detected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression guard: frequency must never suppress a name.
+
+    A document-frequency threshold was tried and measured as harmful — in an IPO
+    prospectus the promoter family is named on nearly every page, so the most
+    sensitive names are also the most frequent strings. This test fails if any
+    frequency-based rejection is reintroduced.
+    """
+    name = "Kushal Hegde"
+    text = "\n".join([f"{name} signed and dated the register on that day"] * 40)
+
+    def _nlp(chunk: str) -> _FakeDoc:
+        ents = []
+        start = 0
+        while True:
+            i = chunk.find(name, start)
+            if i < 0:
+                break
+            ents.append(_FakeSpan(name, i, "PERSON"))
+            start = i + 1
+        return _FakeDoc(ents)
+
+    monkeypatch.setattr("pii_redaction.ner._load_nlp", lambda _name: _nlp)
+    entities = NERDetector().detect(text, _cfg())
+    assert len(entities) == 40
+    assert {e.text for e in entities} == {name}
 
 
 def test_heading_block_rejected(monkeypatch: pytest.MonkeyPatch) -> None:

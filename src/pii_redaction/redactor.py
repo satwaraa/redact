@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections import Counter
 from collections.abc import Callable, Sequence
 from dataclasses import replace
@@ -54,6 +55,11 @@ def expand_occurrences(
     treats any surviving original as a hard failure, so once a value is known
     PII, each non-overlapping occurrence must be scheduled for replacement.
 
+    Matching is whitespace-flexible: a name written "Kushal Subbayya Hegde" in
+    prose appears as "Kushal\\tSubbayya Hegde" in a table cell, and an exact
+    search would leave the tabbed copy in the output. The surrogate map
+    normalises whitespace, so both forms receive the same fake value.
+
     Call this *after* dropping cross-block spans: a longer multi-block hit must
     not claim a position and then be discarded, leaving a shorter in-block
     repeat unreplaced.
@@ -72,13 +78,11 @@ def expand_occurrences(
     for original, proto in sorted(
         prototypes.items(), key=lambda item: (-len(item[0]), item[0])
     ):
-        search_from = 0
-        while True:
-            start = text.find(original, search_from)
-            if start < 0:
-                break
-            end = start + len(original)
-            search_from = start + 1
+        # Newlines stay excluded — a cross-block span cannot be spliced.
+        pattern = re.compile(r"[^\S\n]+".join(re.escape(t) for t in original.split()))
+        for match in pattern.finditer(text):
+            start, end = match.start(), match.end()
+            matched = match.group(0)
             if block_end_for_offset is not None:
                 try:
                     block_end = block_end_for_offset(start)
@@ -94,7 +98,7 @@ def expand_occurrences(
             extras.append(
                 PIIEntity(
                     pii_type=proto.pii_type,
-                    text=original,
+                    text=matched,
                     start=start,
                     end=end,
                     source=proto.source,
